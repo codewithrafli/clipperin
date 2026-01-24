@@ -416,6 +416,21 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         
         if len(segments) > preview_count:
             log_progress(job_dir, f"   ... and {len(segments) - preview_count} more segments")
+            
+        # Free up memory (Important for small RAM)
+        try:
+            del model
+            import gc
+            gc.collect()
+            log_progress(job_dir, "🧹 Freed up memory (unloaded Whisper model)")
+        except:
+            pass
+        
+        # --- Apply Text Correction Pipeline ---
+        log_progress(job_dir, "🧹 Running text correction (normalizing & slang fix)...")
+        use_llm_correction = options.get("use_ai_detection", False) # Reuse flag for now
+        segments = correct_text_pipeline(segments, use_llm=use_llm_correction)
+        log_progress(job_dir, "✅ Text clean up complete")
         
         log_progress(job_dir, "✅ Transcription complete!")
         
@@ -589,6 +604,135 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         self.update_state(state="FAILED", meta={"error": str(e)})
         raise
 
+
+
+
+# --- Text Processing Pipeline ---
+
+class TextProcessor:
+    """Handles text normalization and correction"""
+    
+    # Common Indonesian Slang Dictionary
+    SLANG_DICT = {
+        r"\bgak\b": "tidak",
+        r"\bnggak\b": "tidak",
+        r"\bga\b": "tidak",
+        r"\btak\b": "tidak",
+        r"\bgk\b": "tidak",
+        r"\byg\b": "yang",
+        r"\bak\b": "aku",
+        r"\baqu\b": "aku",
+        r"\bgw\b": "gue",
+        r"\blu\b": "lo",
+        r"\budh\b": "sudah",
+        r"\bdah\b": "sudah",
+        r"\bblm\b": "belum",
+        r"\bkrn\b": "karena",
+        r"\bkalo\b": "kalau",
+        r"\bkl\b": "kalau",
+        r"\bjd\b": "jadi",
+        r"\bjg\b": "juga",
+        r"\bbr\b": "baru",
+        r"\bspt\b": "seperti",
+        r"\bgmn\b": "gimana",
+        r"\bpd\b": "pada",
+        r"\bdlm\b": "dalam",
+        r"\bdr\b": "dari",
+        r"\butk\b": "untuk",
+        r"\bny\b": "nya",
+        r"\bbgt\b": "banget",
+        r"\baja\b": "saja",
+        r"\baj\b": "saja",
+        r"\bsama\b": "sama",
+        r"\bsm\b": "sama",
+        r"\bthx\b": "makasih",
+        r"\bmkasih\b": "makasih",
+        r"\bjan\b": "jangan",
+        r"\bjgn\b": "jangan",
+        r"\btdk\b": "tidak",
+        # Specific Phonetic Fixes (Whisper Hallucinations)
+        r"\bmasyumis\b": "masih bisa",
+        r"\bpisot\b": "episode",
+        r"\bcukali\b": "lucu kali",
+        r"\bcukam\b": "cuma",
+        r"\bkarus\b": "kadang",
+        r"\byonobak\b": "yono bakri",
+        r"\bayonobakri\b": "yono bakri",
+        r"\bdirilus\b": "diri lu",
+        r"\bresulusinya\b": "resolusinya",
+    }
+
+    @staticmethod
+    def normalize(text: str) -> str:
+        """Basic normalization: trim, lowercase first char if needed"""
+        if not text:
+            return ""
+        text = text.strip()
+        # Ensure only one space between words
+        text = re.sub(r'\s+', ' ', text)
+        return text
+
+    @staticmethod
+    def correct_slang(text: str) -> str:
+        """Rule-based replacement of slang words"""
+        if not text:
+            return ""
+        
+        # Preserve original case for non-slang words? 
+        # For simple subtitle correction, lowercase comparison is safer
+        # but we want to keep capitalization for names. 
+        # So we use regex with ignore case flag for matching.
+        
+        corrected = text
+        for pattern, replacement in TextProcessor.SLANG_DICT.items():
+            corrected = re.sub(pattern, replacement, corrected, flags=re.IGNORECASE)
+            
+        # Fix common punctuation issues
+        corrected = re.sub(r'\s+([,.?!])', r'\1', corrected) # Remove space before punct
+        
+        return corrected
+
+    @staticmethod
+    def llm_cleanup(text_batch: list, api_key: str = None, provider: str = "gemini") -> list:
+        """
+        Optional: Send valid sentences to LLM for context-aware correction.
+        Not implemented fully to save tokens, but structure is here.
+        """
+        if not api_key:
+            return text_batch
+            
+        # TODO: Implement batch LLM correction
+        return text_batch
+
+
+def correct_text_pipeline(segments: list, use_llm: bool = False) -> list:
+    """
+    Run full text processing pipeline on segments.
+    """
+    processed = []
+    
+    for seg in segments:
+        text = seg["text"]
+        
+        # 1. Normalize
+        text = TextProcessor.normalize(text)
+        
+        # 2. Rule-based Correction
+        text = TextProcessor.correct_slang(text)
+        
+        # 3. Add to list
+        processed.append({
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": text
+        })
+        
+    # 4. LLM Cleanup (Batch) - Optional
+    if use_llm and (settings.gemini_api_key or settings.openai_api_key):
+        # Implementation for future: splitting into batches and sending to API
+        pass
+        
+    return processed
 
 
 def format_timestamp(seconds: float) -> str:
