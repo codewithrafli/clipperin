@@ -14,6 +14,8 @@ function App() {
   const [useAi, setUseAi] = useState(false)
   const [sortBy, setSortBy] = useState('recent') // new: sorting
   const [filterStatus, setFilterStatus] = useState('all') // new: filtering
+  const [previewVideo, setPreviewVideo] = useState(null) // new: video preview
+  const [previewJob, setPreviewJob] = useState(null) // new: job for preview
 
   // Fetch jobs and caption styles on mount
   useEffect(() => {
@@ -321,28 +323,56 @@ function App() {
                       {job.clips && job.clips.length > 0 ? (
                         job.clips.map((clip, idx) => (
                            <div key={idx} className="clip-item">
-                              {clip.thumbnail && (
-                                <div className="clip-thumbnail">
+                              <div className="clip-thumbnail-wrapper">
+                                {clip.thumbnail ? (
                                   <img
                                     src={`${API_BASE}/jobs/${job.id}/thumbnail/${clip.thumbnail}`}
                                     alt={`Clip ${idx+1}`}
                                     loading="lazy"
+                                    className="clip-thumbnail"
                                   />
+                                ) : (
+                                  <div className="clip-thumbnail-placeholder">
+                                    <span className="placeholder-icon">🎬</span>
+                                  </div>
+                                )}
+                                <button
+                                  className="preview-btn"
+                                  onClick={() => {
+                                    setPreviewVideo(clip)
+                                    setPreviewJob(job.id)
+                                  }}
+                                  title="Preview video"
+                                >
+                                  ▶️ Preview
+                                </button>
+                              </div>
+                              <div className="clip-content">
+                                <div className="clip-header">
+                                  <span className="clip-score">🔥 {clip.score}/10</span>
+                                  <span className="clip-duration">~30s</span>
                                 </div>
-                              )}
-                              <div className="clip-header">
-                                <span className="clip-score">🔥 {clip.score}/10</span>
-                                <span className="clip-duration">~{30}s</span>
+                                <div className="clip-title" title={clip.hook}>
+                                  {clip.hook || `Viral Clip #${idx+1}`}
+                                </div>
+                                <div className="clip-actions">
+                                  <button
+                                    className="btn-preview"
+                                    onClick={() => {
+                                      setPreviewVideo(clip)
+                                      setPreviewJob(job.id)
+                                    }}
+                                  >
+                                    👁️ Preview
+                                  </button>
+                                  <button
+                                    className="btn-download-small"
+                                    onClick={() => window.open(`${API_BASE}/jobs/${job.id}/download?filename=${clip.filename}`, '_blank')}
+                                  >
+                                    ⬇️ Download
+                                  </button>
+                                </div>
                               </div>
-                              <div className="clip-title" title={clip.hook}>
-                                {clip.hook || `Viral Clip #${idx+1}`}
-                              </div>
-                              <button
-                                className="btn-download-small"
-                                onClick={() => window.open(`${API_BASE}/jobs/${job.id}/download?filename=${clip.filename}`, '_blank')}
-                              >
-                                ⬇ Download
-                              </button>
                            </div>
                         ))
                       ) : (
@@ -367,6 +397,48 @@ function App() {
           </div>
         )}
       </section>
+
+      {/* Video Preview Modal */}
+      {previewVideo && (
+        <div className="modal-overlay" onClick={() => setPreviewVideo(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>🎬 Preview Clip</h3>
+              <button className="modal-close" onClick={() => setPreviewVideo(null)}>
+                ✕
+              </button>
+            </div>
+            <div className="modal-body">
+              <video
+                key={previewVideo.filename}
+                controls
+                autoPlay
+                className="preview-video"
+                src={`${API_BASE}/jobs/${previewJob}/download?filename=${previewVideo.filename}`}
+              >
+                Your browser does not support video playback.
+              </video>
+              <div className="preview-info">
+                <div className="preview-details">
+                  <span className="detail-badge">🔥 Score: {previewVideo.score}/10</span>
+                  <span className="detail-badge">⏱️ ~30s</span>
+                </div>
+                <div className="preview-hook">
+                  <strong>Hook:</strong> {previewVideo.hook || 'N/A'}
+                </div>
+                <div className="preview-actions">
+                  <button
+                    className="btn btn-download-modal"
+                    onClick={() => window.open(`${API_BASE}/jobs/${previewJob}/download?filename=${previewVideo.filename}`, '_blank')}
+                  >
+                    ⬇️ Download Clip
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

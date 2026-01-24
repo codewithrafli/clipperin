@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     
     # Whisper settings
     whisper_model: str = "base"
+    whisper_language: Optional[str] = None  # None = auto-detect, or set to "en", "id", etc.
     
     # Video output settings
     output_width: int = 1080

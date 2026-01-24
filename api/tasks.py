@@ -201,13 +201,27 @@ Only return the JSON array, nothing else."""
     # Try Gemini first
     if settings.gemini_api_key:
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=settings.gemini_api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-            clips = parse_ai_response(response.text, segments, target_duration)
-            if clips:
-                return clips
+            # Try new package first
+            try:
+                from google import genai
+                client = genai.Client(api_key=settings.gemini_api_key)
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash-exp',
+                    contents=prompt
+                )
+                clips = parse_ai_response(response.text, segments, target_duration)
+                if clips:
+                    return clips
+            except ImportError:
+                # Fallback to old package (will be deprecated)
+                import google.generativeai as genai
+                genai.configure(api_key=settings.gemini_api_key)
+                # Use gemini-pro which is stable and widely available
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                clips = parse_ai_response(response.text, segments, target_duration)
+                if clips:
+                    return clips
         except Exception as e:
             print(f"Gemini API error: {e}")
     
@@ -272,13 +286,18 @@ def smart_detect_clips(segments: list, target_duration: int = 30, use_ai: bool =
     """
     # Check if AI is available and requested
     ai_available = bool(settings.gemini_api_key or settings.openai_api_key)
-    
+
     if use_ai and ai_available:
-        clips = analyze_transcript_with_ai(segments, target_duration)
-        if clips:
-            return clips, "ai"
-    
-    # Fallback to rule-based
+        try:
+            clips = analyze_transcript_with_ai(segments, target_duration)
+            if clips:
+                return clips, "ai"
+            else:
+                print("AI detection returned no clips, falling back to rule-based")
+        except Exception as e:
+            print(f"AI detection failed: {e}, falling back to rule-based")
+
+    # Fallback to rule-based (always works)
     clips = analyze_transcript_for_clips(segments, target_duration)
     return clips, "rule-based"
 
@@ -415,14 +434,21 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         log_progress(job_dir, "🎧 Transcribing audio... (this may take a while)")
 
         # Transcribe with optimizations
-        result = model.transcribe(
-            input_file,
-            verbose=False,
-            language="auto",  # Auto-detect language
-            fp16=False,  # Disable FP16 for CPU compatibility
-            compression_ratio_threshold=2.4,  # Skip low-quality segments
-            no_speech_threshold=0.6  # Skip silence
-        )
+        transcribe_options = {
+            "verbose": False,
+            "fp16": False,  # Disable FP16 for CPU compatibility
+            "compression_ratio_threshold": 2.4,  # Skip low-quality segments
+            "no_speech_threshold": 0.6  # Skip silence
+        }
+
+        # Only add language if explicitly set (None = auto-detect)
+        if settings.whisper_language:
+            transcribe_options["language"] = settings.whisper_language
+            log_progress(job_dir, f"🌍 Language: {settings.whisper_language}")
+        else:
+            log_progress(job_dir, "🌍 Language: auto-detect")
+
+        result = model.transcribe(input_file, **transcribe_options)
         
         # Write SRT file
         segments = result["segments"]
