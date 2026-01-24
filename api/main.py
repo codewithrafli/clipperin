@@ -47,6 +47,7 @@ class JobResponse(BaseModel):
     created_at: str
     eta_seconds: Optional[int] = None
     error: Optional[str] = None
+    clips: Optional[list] = []
 
 
 @app.get("/")
@@ -150,16 +151,17 @@ def download_job(job_id: str):
     if job["status"] != "completed":
         raise HTTPException(status_code=400, detail=f"Job not ready. Status: {job['status']}")
     
-    output_file = os.path.join(settings.data_dir, "jobs", job_id, "output.mp4")
+    file_path = os.path.join(settings.data_dir, "jobs", job_id, filename)
     
-    if not os.path.exists(output_file):
-        raise HTTPException(status_code=404, detail="Output file not found")
+    if not os.path.exists(file_path):
+        # Fallback for backward compatibility
+        if filename == "output.mp4":
+            raise HTTPException(status_code=404, detail="Video not found")
+        # Try finding it in the clips list if possible? 
+        # For now just return 404
+        raise HTTPException(status_code=404, detail=f"File {filename} not found")
     
-    return FileResponse(
-        output_file,
-        media_type="video/mp4",
-        filename=f"clip_{job_id}.mp4"
-    )
+    return FileResponse(file_path, media_type="video/mp4", filename=filename)
 
 
 @app.get("/api/jobs/{job_id}/logs")
@@ -245,6 +247,9 @@ def update_job_status(job_id: str):
     elif result.state == "COMPLETED" or result.state == "SUCCESS":
         job["status"] = "completed"
         job["progress"] = 100
+        # Add clips to job info
+        if isinstance(result.result, dict):
+            job["clips"] = result.result.get("clips", [])
     elif result.state == "FAILED" or result.state == "FAILURE":
         job["status"] = "failed"
         job["error"] = str(result.info) if result.info else "Unknown error"

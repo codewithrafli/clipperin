@@ -250,12 +250,34 @@ function App() {
                 </div>
                 <div className="job-actions">
                   {job.status === 'completed' && (
-                    <button 
-                      className="btn btn-download" 
-                      onClick={() => downloadJob(job.id)}
-                    >
-                      Download
-                    </button>
+                    <div className="clips-grid">
+                      {job.clips && job.clips.length > 0 ? (
+                        job.clips.map((clip, idx) => (
+                           <div key={idx} className="clip-item">
+                              <div className="clip-header">
+                                <span className="clip-score">🔥 {clip.score}/10</span>
+                                <span className="clip-duration">~{30}s</span>
+                              </div>
+                              <div className="clip-title" title={clip.hook}>
+                                {clip.hook || `Viral Clip #${idx+1}`}
+                              </div>
+                              <button 
+                                className="btn-download-small" 
+                                onClick={() => window.open(`${API_BASE}/jobs/${job.id}/download?filename=${clip.filename}`, '_blank')}
+                              >
+                                ⬇ Download
+                              </button>
+                           </div>
+                        ))
+                      ) : (
+                        <button 
+                          className="btn btn-download" 
+                          onClick={() => downloadJob(job.id)}
+                        >
+                          Download Clip
+                        </button>
+                      )}
+                    </div>
                   )}
                   <button 
                     className="btn btn-delete" 

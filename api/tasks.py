@@ -438,71 +438,133 @@ def process_video(self, job_id: str, url: str, options: dict = None):
                 time_str = f"{int(clip['start']//60):02d}:{int(clip['start']%60):02d}"
                 log_progress(job_dir, f"   #{i} [{time_str}] Score: {clip['score']} - \"{clip['hook']}...\"")
         
-        # Use provided start time or best detected clip
+        generated_clips = []
+        
+        # Determine clips to generate
+        # If auto_detect is TRUE, generate from suggested_clips (top 3)
+        # If auto_detect is FALSE, use the single manual timestamp
+        
+        clips_to_process = []
+        
         if options.get("clip_start") is not None:
-            clip_start = options["clip_start"]
-            log_progress(job_dir, f"📍 Using custom start time: {clip_start}s")
+             # Manual mode: Single clip
+             clips_to_process.append({
+                 "start": options["clip_start"],
+                 "duration": options.get("clip_duration", settings.clip_duration),
+                 "filename": "output.mp4",
+                 "score": 0,
+                 "id": "manual"
+             })
+             log_progress(job_dir, f"📍 Processing manual clip at {options['clip_start']}s")
+             
         elif options.get("auto_detect", True) and suggested_clips:
-            clip_start = suggested_clips[0]["start"]
-            log_progress(job_dir, f"🎯 Auto-selected best clip at {int(clip_start)}s")
+            # Auto mode: Top 3 viral clips
+            log_progress(job_dir, f"🚀 Generating top {min(3, len(suggested_clips))} viral clips...")
+            
+            for i, clip in enumerate(suggested_clips[:3]):
+                clips_to_process.append({
+                    "start": clip["start"],
+                    "duration": clip["duration"],
+                    "filename": f"clip_{i+1}.mp4",
+                    "score": clip["score"],
+                    "hook": clip["hook"],
+                    "id": f"viral_{i+1}"
+                })
         else:
-            clip_start = settings.clip_start
-            log_progress(job_dir, f"📍 Using default start time: {clip_start}s")
-        
-        # Step 4: Create clip with FFmpeg
-        self.update_state(state="PROCESSING", meta={"progress": 70})
-        
+            # Fallback default
+            clips_to_process.append({
+                "start": settings.clip_start,
+                "duration": settings.clip_duration,
+                "filename": "output.mp4",
+                "score": 0,
+                "id": "default"
+            })
+            log_progress(job_dir, f"📍 Processing default clip at {settings.clip_start}s")
+
         # Get caption style
         style_name = options.get("caption_style", "default")
         style = CAPTION_STYLES.get(style_name, CAPTION_STYLES["default"])
         log_progress(job_dir, f"🎨 Using caption style: {style['name']}")
         
         # Apply dynamic splitting if needed (e.g. for CapCut style)
+        processed_segments = segments
         if style.get("dynamic"):
-            log_progress(job_dir, "⚡ Applying dynamic segment splitting for CapCut style...")
-            segments = split_segments_for_style(segments, style)
+            log_progress(job_dir, "⚡ Applying dynamic segment splitting...")
+            processed_segments = split_segments_for_style(segments, style)
             
-            # Re-write SRT with new segments for FFmpeg usage
-            with open(srt_file, "w", encoding="utf-8") as f:
-                for i, seg in enumerate(segments, 1):
+        # Loop to generate clips
+        total_clips = len(clips_to_process)
+        
+        for idx, clip_info in enumerate(clips_to_process, 1):
+            clip_start = clip_info["start"]
+            clip_duration = clip_info["duration"]
+            output_filename = clip_info["filename"]
+            clip_id = clip_info["id"]
+            
+            log_progress(job_dir, f"🎬 [{idx}/{total_clips}] Processing clip: {output_filename} ({int(clip_start)}s)")
+            
+            current_output = os.path.join(job_dir, output_filename)
+            clip_srt_file = os.path.join(job_dir, f"subs_{clip_id}.srt")
+            
+            # Create adjusted SRT for this specific clip
+            # Note: We need to write this to a file for FFmpeg to use
+            
+            # Filter segments for this clip
+            clip_segments = []
+            clip_end = clip_start + clip_duration
+            
+            for seg in processed_segments:
+                 # Check overlap
+                 seg_start = seg["start"]
+                 seg_end = seg["end"]
+                 
+                 if seg_end > clip_start and seg_start < clip_end:
+                     # Calculate relative timing
+                     new_start = max(0, seg_start - clip_start)
+                     new_end = min(clip_duration, seg_end - clip_start)
+                     
+                     if new_end > new_start:
+                         clip_segments.append({
+                             "start": new_start,
+                             "end": new_end,
+                             "text": seg["text"]
+                         })
+            
+            # Write unique SRT file for this clip
+            with open(clip_srt_file, "w", encoding="utf-8") as f:
+                for i, seg in enumerate(clip_segments, 1):
                     start = format_timestamp(seg["start"])
                     end = format_timestamp(seg["end"])
                     text = seg["text"].strip()
                     f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
-        
-        log_progress(job_dir, f"✂️ Creating clip: {int(clip_start)}s to {int(clip_start + clip_duration)}s")
-        
-        # Create adjusted SRT for the clip
-        create_clip_srt(srt_file, clip_srt_file, clip_start, clip_duration)
-        log_progress(job_dir, "📝 Adjusted subtitles for clip timing")
-        
-        # Get caption style
-        style_name = options.get("caption_style", "default")
-        style = CAPTION_STYLES.get(style_name, CAPTION_STYLES["default"])
-        log_progress(job_dir, f"🎨 Using caption style: {style['name']}")
-        
-        log_progress(job_dir, "🎬 Processing video with FFmpeg...")
-        
-        # FFmpeg with proper timing - use -ss AFTER -i to avoid subtitle sync issues
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            "-i", input_file,
-            "-ss", str(clip_start),
-            "-t", str(clip_duration),
-            "-vf", (
-                f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
-                f"scale={settings.output_width}:{settings.output_height},"
-                f"subtitles={clip_srt_file}:force_style='{style['style']}',"
-                f"eq=contrast=1.05:saturation=1.1"
-            ),
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", str(settings.output_crf),
-            "-c:a", "aac",
-            "-b:a", "128k",
-            output_file
-        ]
-        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+
+            # FFmpeg Command
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-i", input_file,
+                "-ss", str(clip_start),
+                "-t", str(clip_duration),
+                "-vf", (
+                    f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
+                    f"scale={settings.output_width}:{settings.output_height},"
+                    f"subtitles={clip_srt_file}:force_style='{style['style']}',"
+                    f"eq=contrast=1.05:saturation=1.1"
+                ),
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", str(settings.output_crf),
+                "-c:a", "aac",
+                "-b:a", "128k",
+                current_output
+            ]
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            
+            generated_clips.append({
+                "filename": output_filename,
+                "score": clip_info.get("score", 0),
+                "hook": clip_info.get("hook", "Clip"),
+                "path": current_output
+            })
         
         log_progress(job_dir, "✅ Video processing complete!")
         log_progress(job_dir, "🎉 Job finished successfully!")
@@ -517,7 +579,8 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         
         return {
             "status": "completed",
-            "output_file": output_file,
+            "clips": generated_clips, # Updated to return list of clips
+            "output_file": generated_clips[0]["path"] if generated_clips else None, # Backwards compatibility
             "suggested_clips": suggested_clips[:5]
         }
         
