@@ -15,9 +15,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - DATA_DIR=/data
+    env_file:
+      - .env
     volumes:
       - ./data:/data
     depends_on:
@@ -30,9 +29,8 @@ services:
       context: ./api
       dockerfile: Dockerfile
     command: celery -A tasks worker --loglevel=info --concurrency=1
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - DATA_DIR=/data
+    env_file:
+      - .env
     volumes:
       - ./data:/data
     depends_on:
