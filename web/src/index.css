@@ -96,6 +96,29 @@ body {
     color: var(--text-secondary);
 }
 
+.style-select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    min-width: 140px;
+}
+
+.style-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.form-hint {
+    margin-top: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
 .btn {
     background: linear-gradient(135deg, var(--accent), #8b5cf6);
     border: none;

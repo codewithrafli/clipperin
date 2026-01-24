@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from celery.result import AsyncResult
 
 from config import settings
-from tasks import celery_app, process_video
+from tasks import celery_app, process_video, CAPTION_STYLES
 
 app = FastAPI(
     title="Auto Clipper Engine",
@@ -34,6 +34,8 @@ class JobCreate(BaseModel):
     url: str
     clip_start: Optional[int] = None
     clip_duration: Optional[int] = None
+    caption_style: Optional[str] = "default"
+    auto_detect: Optional[bool] = True
 
 
 class JobResponse(BaseModel):
@@ -61,7 +63,10 @@ def create_job(job: JobCreate):
     job_id = str(uuid.uuid4())[:8]
     
     # Start Celery task
-    options = {}
+    options = {
+        "caption_style": job.caption_style,
+        "auto_detect": job.auto_detect
+    }
     if job.clip_start is not None:
         options["clip_start"] = job.clip_start
     if job.clip_duration is not None:
@@ -140,6 +145,32 @@ def get_job_logs(job_id: str):
         lines = f.read().strip().split("\n")
     
     return {"logs": lines}
+
+
+@app.get("/api/caption-styles")
+def get_caption_styles():
+    """Get available caption styles"""
+    return {
+        "styles": [
+            {"id": key, "name": style["name"]}
+            for key, style in CAPTION_STYLES.items()
+        ]
+    }
+
+
+@app.get("/api/jobs/{job_id}/clips")
+def get_suggested_clips(job_id: str):
+    """Get AI-detected suggested clips for a job"""
+    clips_file = os.path.join(settings.data_dir, "jobs", job_id, "suggested_clips.json")
+    
+    if not os.path.exists(clips_file):
+        return {"clips": [], "message": "No clips detected yet. Wait for transcription to complete."}
+    
+    import json
+    with open(clips_file, "r") as f:
+        clips = json.load(f)
+    
+    return {"clips": clips}
 
 
 @app.delete("/api/jobs/{job_id}")

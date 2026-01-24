@@ -8,10 +8,13 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [expandedJob, setExpandedJob] = useState(null)
   const [logs, setLogs] = useState([])
+  const [captionStyles, setCaptionStyles] = useState([])
+  const [selectedStyle, setSelectedStyle] = useState('default')
 
-  // Fetch jobs on mount and poll for updates
+  // Fetch jobs and caption styles on mount
   useEffect(() => {
     fetchJobs()
+    fetchCaptionStyles()
     const interval = setInterval(fetchJobs, 3000)
     return () => clearInterval(interval)
   }, [])
@@ -27,6 +30,18 @@ function App() {
     const interval = setInterval(() => fetchLogs(expandedJob), 2000)
     return () => clearInterval(interval)
   }, [expandedJob])
+
+  async function fetchCaptionStyles() {
+    try {
+      const res = await fetch(`${API_BASE}/caption-styles`)
+      if (res.ok) {
+        const data = await res.json()
+        setCaptionStyles(data.styles || [])
+      }
+    } catch (err) {
+      console.error('Failed to fetch caption styles:', err)
+    }
+  }
 
   async function fetchJobs() {
     try {
@@ -61,7 +76,11 @@ function App() {
       const res = await fetch(`${API_BASE}/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim() })
+        body: JSON.stringify({
+          url: url.trim(),
+          caption_style: selectedStyle,
+          auto_detect: true
+        })
       })
       if (res.ok) {
         setUrl('')
@@ -124,9 +143,22 @@ function App() {
             onChange={(e) => setUrl(e.target.value)}
             disabled={loading}
           />
+          <select 
+            className="style-select"
+            value={selectedStyle}
+            onChange={(e) => setSelectedStyle(e.target.value)}
+            disabled={loading}
+          >
+            {captionStyles.map(style => (
+              <option key={style.id} value={style.id}>{style.name}</option>
+            ))}
+          </select>
           <button type="submit" className="btn" disabled={loading || !url.trim()}>
             {loading ? 'Submitting...' : 'Create Clip'}
           </button>
+        </div>
+        <div className="form-hint">
+          🧠 AI will auto-detect the best viral moment • 🎨 Caption: {captionStyles.find(s => s.id === selectedStyle)?.name || 'Default'}
         </div>
       </form>
 
