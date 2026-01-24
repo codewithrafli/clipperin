@@ -161,6 +161,123 @@ def analyze_transcript_for_clips(segments: list, target_duration: int = 30) -> l
     return clips
 
 
+def analyze_transcript_with_ai(segments: list, target_duration: int = 30) -> list:
+    """
+    Smart Clip Detection using Gemini or OpenAI API.
+    Returns top 5 potential viral clip timestamps.
+    """
+    if not segments:
+        return []
+    
+    # Build transcript text with timestamps
+    transcript_text = ""
+    for seg in segments:
+        time_str = f"{int(seg['start']//60):02d}:{int(seg['start']%60):02d}"
+        transcript_text += f"[{time_str}] {seg['text'].strip()}\n"
+    
+    prompt = f"""Analyze this video transcript and identify the TOP 5 most viral/engaging moments that would make great short clips (TikTok/Reels/Shorts style).
+
+For each moment, provide:
+1. timestamp (in MM:SS format)
+2. virality_score (1-10)
+3. reason (hook, controversy, insight, humor, emotion, etc.)
+4. hook_text (the actual text that makes it engaging)
+
+Transcript:
+{transcript_text[:4000]}
+
+Return as JSON array:
+[{{"timestamp": "01:23", "score": 8, "reason": "strong hook", "hook": "text here"}}]
+
+Only return the JSON array, nothing else."""
+
+    clips = []
+    
+    # Try Gemini first
+    if settings.gemini_api_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=settings.gemini_api_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            clips = parse_ai_response(response.text, segments, target_duration)
+            if clips:
+                return clips
+        except Exception as e:
+            print(f"Gemini API error: {e}")
+    
+    # Try OpenAI
+    if settings.openai_api_key:
+        try:
+            import openai
+            client = openai.OpenAI(api_key=settings.openai_api_key)
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000
+            )
+            clips = parse_ai_response(response.choices[0].message.content, segments, target_duration)
+            if clips:
+                return clips
+        except Exception as e:
+            print(f"OpenAI API error: {e}")
+    
+    return clips
+
+
+def parse_ai_response(response_text: str, segments: list, target_duration: int) -> list:
+    """Parse AI response and convert to clip format"""
+    import json
+    
+    try:
+        # Try to extract JSON from response
+        json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        if not json_match:
+            return []
+        
+        ai_clips = json.loads(json_match.group())
+        clips = []
+        
+        for item in ai_clips[:5]:
+            timestamp = item.get("timestamp", "00:00")
+            parts = timestamp.split(":")
+            if len(parts) == 2:
+                start_seconds = int(parts[0]) * 60 + int(parts[1])
+            else:
+                start_seconds = 0
+            
+            clips.append({
+                "start": max(0, start_seconds - 2),
+                "duration": target_duration,
+                "score": item.get("score", 5),
+                "hook": item.get("hook", "")[:50],
+                "reasons": [item.get("reason", "ai_detected")]
+            })
+        
+        return clips
+    except Exception as e:
+        print(f"Failed to parse AI response: {e}")
+        return []
+
+
+def smart_detect_clips(segments: list, target_duration: int = 30, use_ai: bool = True) -> tuple:
+    """
+    Hybrid Smart Clip Detection.
+    Returns (clips, method_used)
+    """
+    # Check if AI is available and requested
+    ai_available = bool(settings.gemini_api_key or settings.openai_api_key)
+    
+    if use_ai and ai_available:
+        clips = analyze_transcript_with_ai(segments, target_duration)
+        if clips:
+            return clips, "ai"
+    
+    # Fallback to rule-based
+    clips = analyze_transcript_for_clips(segments, target_duration)
+    return clips, "rule-based"
+
+
 def create_clip_srt(original_srt: str, clip_srt: str, start_time: float, duration: float):
     """Create a new SRT file adjusted for clip timing"""
     with open(original_srt, "r", encoding="utf-8") as f:
@@ -301,7 +418,14 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         log_progress(job_dir, "🧠 Analyzing transcript for viral moments...")
         
         clip_duration = options.get("clip_duration", settings.clip_duration)
-        suggested_clips = analyze_transcript_for_clips(segments, clip_duration)
+        use_ai = options.get("use_ai_detection", True)
+        
+        suggested_clips, detection_method = smart_detect_clips(segments, clip_duration, use_ai)
+        
+        if detection_method == "ai":
+            log_progress(job_dir, "🤖 Using AI-powered detection (Gemini/OpenAI)")
+        else:
+            log_progress(job_dir, "📊 Using rule-based detection (free)")
         
         if suggested_clips:
             log_progress(job_dir, f"🎯 Found {len(suggested_clips)} potential viral clips:")

@@ -10,11 +10,14 @@ function App() {
   const [logs, setLogs] = useState([])
   const [captionStyles, setCaptionStyles] = useState([])
   const [selectedStyle, setSelectedStyle] = useState('default')
+  const [aiAvailable, setAiAvailable] = useState(false)
+  const [useAi, setUseAi] = useState(false)
 
   // Fetch jobs and caption styles on mount
   useEffect(() => {
     fetchJobs()
     fetchCaptionStyles()
+    fetchDetectionModes()
     const interval = setInterval(fetchJobs, 3000)
     return () => clearInterval(interval)
   }, [])
@@ -40,6 +43,18 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to fetch caption styles:', err)
+    }
+  }
+
+  async function fetchDetectionModes() {
+    try {
+      const res = await fetch(`${API_BASE}/detection-modes`)
+      if (res.ok) {
+        const data = await res.json()
+        setAiAvailable(data.ai_configured || false)
+      }
+    } catch (err) {
+      console.error('Failed to fetch detection modes:', err)
     }
   }
 
@@ -79,7 +94,8 @@ function App() {
         body: JSON.stringify({
           url: url.trim(),
           caption_style: selectedStyle,
-          auto_detect: true
+          auto_detect: true,
+          use_ai_detection: useAi
         })
       })
       if (res.ok) {
@@ -157,8 +173,20 @@ function App() {
             {loading ? 'Submitting...' : 'Create Clip'}
           </button>
         </div>
+        <div className="form-options">
+          <label className="toggle-label">
+            <input
+              type="checkbox"
+              checked={useAi}
+              onChange={(e) => setUseAi(e.target.checked)}
+              disabled={!aiAvailable || loading}
+            />
+            <span>🤖 Use AI Detection</span>
+            {!aiAvailable && <span className="hint">(Add API key in .env)</span>}
+          </label>
+        </div>
         <div className="form-hint">
-          🧠 AI will auto-detect the best viral moment • 🎨 Caption: {captionStyles.find(s => s.id === selectedStyle)?.name || 'Default'}
+          {useAi && aiAvailable ? '🤖 AI-powered detection (Gemini/OpenAI)' : '📊 Rule-based detection (free)'} • 🎨 Caption: {captionStyles.find(s => s.id === selectedStyle)?.name || 'Default'}
         </div>
       </form>
 

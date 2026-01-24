@@ -36,6 +36,7 @@ class JobCreate(BaseModel):
     clip_duration: Optional[int] = None
     caption_style: Optional[str] = "default"
     auto_detect: Optional[bool] = True
+    use_ai_detection: Optional[bool] = False
 
 
 class JobResponse(BaseModel):
@@ -57,6 +58,33 @@ def root():
     }
 
 
+@app.get("/api/detection-modes")
+def get_detection_modes():
+    """Get available detection modes"""
+    gemini_available = bool(settings.gemini_api_key)
+    openai_available = bool(settings.openai_api_key)
+    ai_available = gemini_available or openai_available
+    
+    return {
+        "modes": [
+            {
+                "id": "rule-based",
+                "name": "Rule-based (Free)",
+                "description": "Keyword analysis, no API needed",
+                "available": True
+            },
+            {
+                "id": "ai",
+                "name": "AI-Powered",
+                "description": "Gemini/OpenAI for better accuracy",
+                "available": ai_available,
+                "provider": "gemini" if gemini_available else ("openai" if openai_available else None)
+            }
+        ],
+        "ai_configured": ai_available
+    }
+
+
 @app.post("/api/jobs", response_model=JobResponse)
 def create_job(job: JobCreate):
     """Submit a new video clipping job"""
@@ -65,7 +93,8 @@ def create_job(job: JobCreate):
     # Start Celery task
     options = {
         "caption_style": job.caption_style,
-        "auto_detect": job.auto_detect
+        "auto_detect": job.auto_detect,
+        "use_ai_detection": job.use_ai_detection
     }
     if job.clip_start is not None:
         options["clip_start"] = job.clip_start

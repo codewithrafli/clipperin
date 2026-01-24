@@ -1,5 +1,6 @@
 import os
 from pydantic_settings import BaseSettings
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
     # Clip settings
     clip_start: int = 30  # seconds
     clip_duration: int = 30  # seconds
+    
+    # AI API settings (optional - for enhanced smart detection)
+    gemini_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
     
     class Config:
         env_file = ".env"
