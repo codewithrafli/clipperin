@@ -6,6 +6,8 @@ function App() {
   const [url, setUrl] = useState('')
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(false)
+  const [expandedJob, setExpandedJob] = useState(null)
+  const [logs, setLogs] = useState([])
 
   // Fetch jobs on mount and poll for updates
   useEffect(() => {
@@ -13,6 +15,18 @@ function App() {
     const interval = setInterval(fetchJobs, 3000)
     return () => clearInterval(interval)
   }, [])
+
+  // Fetch logs when job is expanded
+  useEffect(() => {
+    if (!expandedJob) {
+      setLogs([])
+      return
+    }
+    
+    fetchLogs(expandedJob)
+    const interval = setInterval(() => fetchLogs(expandedJob), 2000)
+    return () => clearInterval(interval)
+  }, [expandedJob])
 
   async function fetchJobs() {
     try {
@@ -23,6 +37,18 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to fetch jobs:', err)
+    }
+  }
+
+  async function fetchLogs(jobId) {
+    try {
+      const res = await fetch(`${API_BASE}/jobs/${jobId}/logs`)
+      if (res.ok) {
+        const data = await res.json()
+        setLogs(data.logs || [])
+      }
+    } catch (err) {
+      console.error('Failed to fetch logs:', err)
     }
   }
 
@@ -50,6 +76,7 @@ function App() {
   async function deleteJob(jobId) {
     try {
       await fetch(`${API_BASE}/jobs/${jobId}`, { method: 'DELETE' })
+      if (expandedJob === jobId) setExpandedJob(null)
       fetchJobs()
     } catch (err) {
       console.error('Failed to delete job:', err)
@@ -133,6 +160,28 @@ function App() {
                       />
                     </div>
                   )}
+                  
+                  {/* Logs toggle button */}
+                  <button 
+                    className="btn-logs"
+                    onClick={() => setExpandedJob(expandedJob === job.id ? null : job.id)}
+                  >
+                    {expandedJob === job.id ? '▼ Hide Logs' : '▶ Show Logs'}
+                  </button>
+                  
+                  {/* Logs display */}
+                  {expandedJob === job.id && (
+                    <div className="logs-panel">
+                      {logs.length === 0 ? (
+                        <div className="log-line">Waiting for logs...</div>
+                      ) : (
+                        logs.map((line, i) => (
+                          <div key={i} className="log-line">{line}</div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                  
                   {job.error && (
                     <div style={{ color: 'var(--error)', fontSize: '0.75rem', marginTop: '0.5rem' }}>
                       {job.error}

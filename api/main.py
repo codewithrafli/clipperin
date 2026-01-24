@@ -128,6 +128,20 @@ def download_job(job_id: str):
     )
 
 
+@app.get("/api/jobs/{job_id}/logs")
+def get_job_logs(job_id: str):
+    """Get job processing logs"""
+    log_file = os.path.join(settings.data_dir, "jobs", job_id, "progress.log")
+    
+    if not os.path.exists(log_file):
+        return {"logs": []}
+    
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.read().strip().split("\n")
+    
+    return {"logs": lines}
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str):
     """Delete a job and its files"""
@@ -174,16 +188,12 @@ def update_job_status(job_id: str):
     elif result.state == "FAILED" or result.state == "FAILURE":
         job["status"] = "failed"
         job["error"] = str(result.info) if result.info else "Unknown error"
-    
-    # Calculate ETA based on elapsed time and progress
-    if job["progress"] > 0 and job["progress"] < 100:
-        try:
-            created = datetime.fromisoformat(job["created_at"])
-            elapsed = (datetime.utcnow() - created).total_seconds()
-            # Estimate total time based on progress
-            estimated_total = elapsed / (job["progress"] / 100)
-            job["eta_seconds"] = max(0, int(estimated_total - elapsed))
-        except:
-            job["eta_seconds"] = None
-    else:
-        job["eta_seconds"] = None
+    # Set ETA based on current step (rough estimates)
+    # Whisper doesn't provide real-time progress, so use step-based ETA
+    eta_map = {
+        "pending": 300,      # 5 min estimate
+        "downloading": 120,  # 2 min for download
+        "transcribing": 300, # 5 min for transcription (varies by video length)
+        "processing": 60,    # 1 min for ffmpeg
+    }
+    job["eta_seconds"] = eta_map.get(job["status"])

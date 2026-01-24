@@ -253,6 +253,40 @@ body {
     }
 }
 
+/* Logs Panel */
+.btn-logs {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    cursor: pointer;
+    padding: 0.5rem 0;
+    margin-top: 0.5rem;
+}
+
+.btn-logs:hover {
+    color: var(--accent);
+}
+
+.logs-panel {
+    background: #0d0d12;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    margin-top: 0.5rem;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 0.75rem;
+}
+
+.log-line {
+    color: var(--text-secondary);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
 /* Responsive */
 @media (max-width: 640px) {
     .container {
