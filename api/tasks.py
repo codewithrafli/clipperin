@@ -315,6 +315,760 @@ def smart_detect_clips(segments: list, target_duration: int = 30, use_ai: bool =
     return clips, "rule-based"
 
 
+# =============================================================================
+# CHAPTER ANALYSIS FUNCTIONS (New Feature)
+# =============================================================================
+
+def analyze_chapters_with_ai(
+    segments: list,
+    video_duration: float,
+    min_chapter_duration: int = None,
+    max_chapter_duration: int = None
+) -> list:
+    """
+    AI-powered semantic chapter analysis.
+    Returns chapters with titles, summaries, and keywords (2-5 minutes each).
+    """
+    if not segments:
+        return []
+
+    min_dur = min_chapter_duration or settings.min_chapter_duration
+    max_dur = max_chapter_duration or settings.max_chapter_duration
+
+    # Build full transcript with timestamps
+    transcript_text = ""
+    for seg in segments:
+        time_str = f"[{int(seg['start']//60):02d}:{int(seg['start']%60):02d}]"
+        transcript_text += f"{time_str} {seg['text'].strip()}\n"
+
+    prompt = f"""Analyze this video transcript and divide it into logical chapters based on topic changes.
+
+Video Duration: {int(video_duration//60)} minutes {int(video_duration%60)} seconds
+
+Requirements for each chapter:
+- Duration: {min_dur//60}-{max_dur//60} minutes ({min_dur}-{max_dur} seconds)
+- Title: 10-30 characters, descriptive of the main topic
+- Summary: 50-100 characters, captures the main point
+- Keywords: 3-5 relevant terms/concepts
+
+Important:
+- Divide by SEMANTIC content, not just time
+- Each chapter should cover a complete topic/idea
+- Ensure ALL video content is covered (no gaps)
+- Chapters should be meaningful and standalone
+
+Transcript:
+{transcript_text[:12000]}
+
+Return as JSON array (ONLY the array, no other text):
+[{{"title": "Chapter Title Here", "start_time": "MM:SS", "end_time": "MM:SS", "summary": "Brief summary of this chapter content", "keywords": ["keyword1", "keyword2", "keyword3"]}}]"""
+
+    chapters = []
+
+    # Try Gemini first
+    if settings.gemini_api_key:
+        try:
+            try:
+                from google import genai
+                client = genai.Client(api_key=settings.gemini_api_key)
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash-exp',
+                    contents=prompt
+                )
+                chapters = parse_chapter_response(response.text, video_duration)
+                if chapters:
+                    return chapters
+            except ImportError:
+                import google.generativeai as genai
+                genai.configure(api_key=settings.gemini_api_key)
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                chapters = parse_chapter_response(response.text, video_duration)
+                if chapters:
+                    return chapters
+        except Exception as e:
+            print(f"Gemini chapter analysis error: {e}")
+
+    # Try OpenAI
+    if settings.openai_api_key:
+        try:
+            import openai
+            client = openai.OpenAI(api_key=settings.openai_api_key)
+            response = client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000
+            )
+            chapters = parse_chapter_response(
+                response.choices[0].message.content,
+                video_duration
+            )
+            if chapters:
+                return chapters
+        except Exception as e:
+            print(f"OpenAI chapter analysis error: {e}")
+
+    return chapters
+
+
+def parse_chapter_response(response_text: str, video_duration: float) -> list:
+    """Parse AI response into chapter objects"""
+    import json
+
+    try:
+        # Extract JSON array from response
+        json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        if not json_match:
+            return []
+
+        ai_chapters = json.loads(json_match.group())
+        chapters = []
+
+        for i, item in enumerate(ai_chapters):
+            # Parse timestamps (support MM:SS and HH:MM:SS)
+            start_str = item.get("start_time", "00:00")
+            end_str = item.get("end_time", "00:00")
+
+            start_parts = start_str.split(":")
+            end_parts = end_str.split(":")
+
+            if len(start_parts) == 2:
+                start_secs = int(start_parts[0]) * 60 + int(start_parts[1])
+            elif len(start_parts) == 3:
+                start_secs = int(start_parts[0]) * 3600 + int(start_parts[1]) * 60 + int(start_parts[2])
+            else:
+                start_secs = 0
+
+            if len(end_parts) == 2:
+                end_secs = int(end_parts[0]) * 60 + int(end_parts[1])
+            elif len(end_parts) == 3:
+                end_secs = int(end_parts[0]) * 3600 + int(end_parts[1]) * 60 + int(end_parts[2])
+            else:
+                end_secs = start_secs + 180  # Default 3 minutes
+
+            # Validate duration
+            duration = end_secs - start_secs
+            if duration < 30:  # Minimum 30 seconds
+                continue
+
+            # Clamp to video duration
+            end_secs = min(end_secs, video_duration)
+
+            chapters.append({
+                "id": f"ch_{i+1}",
+                "title": item.get("title", f"Chapter {i+1}")[:30],
+                "start": float(start_secs),
+                "end": float(end_secs),
+                "duration": float(end_secs - start_secs),
+                "summary": item.get("summary", "")[:100],
+                "keywords": item.get("keywords", [])[:5],
+                "confidence": 0.85,
+                "selected": False
+            })
+
+        return chapters
+
+    except Exception as e:
+        print(f"Failed to parse chapter response: {e}")
+        return []
+
+
+def generate_fallback_chapters(segments: list, video_duration: float) -> list:
+    """Rule-based fallback: divide video into ~3 minute chapters"""
+    chapters = []
+    chapter_duration = 180  # 3 minutes
+    num_chapters = max(1, int(video_duration / chapter_duration))
+
+    for i in range(num_chapters):
+        start = i * chapter_duration
+        end = min((i + 1) * chapter_duration, video_duration)
+
+        # Find segments in this range
+        chapter_segments = [
+            seg for seg in segments
+            if seg["start"] >= start and seg["start"] < end
+        ]
+
+        # Extract simple keywords from segments
+        all_text = " ".join([seg["text"] for seg in chapter_segments])
+        keywords = extract_keywords_simple(all_text)
+
+        # Generate simple title from first segment
+        first_text = chapter_segments[0]["text"][:30] if chapter_segments else f"Part {i+1}"
+
+        chapters.append({
+            "id": f"ch_{i+1}",
+            "title": f"Part {i+1}: {first_text[:15]}...",
+            "start": float(start),
+            "end": float(end),
+            "duration": float(end - start),
+            "summary": f"Video segment {i+1} of {num_chapters}",
+            "keywords": keywords[:5],
+            "confidence": 0.5,
+            "selected": False
+        })
+
+    return chapters
+
+
+def extract_keywords_simple(text: str) -> list:
+    """Extract simple keywords from text (rule-based)"""
+    # Common Indonesian/English stopwords to exclude
+    stopwords = {
+        "yang", "dan", "di", "ini", "itu", "dengan", "untuk", "adalah", "pada",
+        "dari", "ke", "ada", "juga", "tidak", "akan", "bisa", "kita", "saya",
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "must", "shall", "can", "to", "of", "in",
+        "for", "on", "with", "at", "by", "from", "as", "into", "through",
+        "during", "before", "after", "above", "below", "between", "under",
+    }
+
+    # Clean and tokenize
+    words = re.findall(r'\b[a-zA-Z]{4,}\b', text.lower())
+
+    # Count word frequencies (excluding stopwords)
+    word_counts = {}
+    for word in words:
+        if word not in stopwords:
+            word_counts[word] = word_counts.get(word, 0) + 1
+
+    # Sort by frequency and return top keywords
+    sorted_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)
+    return [word for word, count in sorted_words[:10]]
+
+
+def smart_chapter_detection(
+    segments: list,
+    video_duration: float,
+    use_ai: bool = True
+) -> tuple:
+    """
+    Hybrid chapter detection.
+    Returns (chapters, method_used)
+    """
+    ai_available = bool(settings.gemini_api_key or settings.openai_api_key)
+
+    if use_ai and ai_available:
+        try:
+            chapters = analyze_chapters_with_ai(segments, video_duration)
+            if chapters and len(chapters) >= 1:
+                return chapters, "ai"
+            else:
+                print("AI chapter detection returned no chapters, falling back to rule-based")
+        except Exception as e:
+            print(f"AI chapter detection failed: {e}")
+
+    # Fallback to rule-based
+    chapters = generate_fallback_chapters(segments, video_duration)
+    return chapters, "rule-based"
+
+
+# =============================================================================
+# TRANSLATION FUNCTIONS (New Feature)
+# =============================================================================
+
+def translate_subtitles_batch(
+    segments: list,
+    target_language: str = None,
+    batch_size: int = None
+) -> list:
+    """
+    Batch translate subtitles to minimize API calls.
+    Processes N subtitles per API call (default 20).
+    """
+    if not segments:
+        return []
+
+    target_lang = target_language or settings.target_language
+    batch_sz = batch_size or settings.translation_batch_size
+
+    # Language name mapping
+    lang_names = {
+        "id": "Indonesian",
+        "zh": "Chinese (Simplified)",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "es": "Spanish",
+        "fr": "French",
+        "de": "German",
+        "pt": "Portuguese",
+        "ar": "Arabic",
+        "hi": "Hindi",
+    }
+    lang_name = lang_names.get(target_lang, target_lang)
+
+    translated = []
+    total_batches = (len(segments) + batch_sz - 1) // batch_sz
+
+    for batch_idx in range(0, len(segments), batch_sz):
+        batch = segments[batch_idx:batch_idx + batch_sz]
+        current_batch = (batch_idx // batch_sz) + 1
+
+        print(f"Translating batch {current_batch}/{total_batches}...")
+
+        # Build batch translation prompt
+        texts_to_translate = [seg["text"] for seg in batch]
+
+        prompt = f"""Translate these video subtitles to {lang_name}.
+
+Requirements:
+- Keep translations natural and conversational (suitable for video captions)
+- Maintain technical accuracy
+- Be concise and fluent
+- Preserve the original meaning
+
+Original texts (numbered):
+{chr(10).join([f'{i+1}. {t}' for i, t in enumerate(texts_to_translate)])}
+
+Return ONLY the translations, one per line, numbered to match:
+1. [translation]
+2. [translation]
+..."""
+
+        translations = call_translation_api(prompt, len(texts_to_translate))
+
+        # Merge with original segments
+        for i, seg in enumerate(batch):
+            translated.append({
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": seg["text"],
+                "translation": translations[i] if i < len(translations) else seg["text"]
+            })
+
+    return translated
+
+
+def call_translation_api(prompt: str, expected_count: int) -> list:
+    """Call AI API for translation"""
+    translations = []
+
+    if settings.gemini_api_key:
+        try:
+            try:
+                from google import genai
+                client = genai.Client(api_key=settings.gemini_api_key)
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash-exp',
+                    contents=prompt
+                )
+                translations = parse_numbered_list(response.text, expected_count)
+                if translations:
+                    return translations
+            except ImportError:
+                import google.generativeai as genai
+                genai.configure(api_key=settings.gemini_api_key)
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                translations = parse_numbered_list(response.text, expected_count)
+                if translations:
+                    return translations
+        except Exception as e:
+            print(f"Gemini translation error: {e}")
+
+    if settings.openai_api_key:
+        try:
+            import openai
+            client = openai.OpenAI(api_key=settings.openai_api_key)
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000
+            )
+            translations = parse_numbered_list(
+                response.choices[0].message.content,
+                expected_count
+            )
+        except Exception as e:
+            print(f"OpenAI translation error: {e}")
+
+    # Fallback: return original texts
+    return translations if translations else [""] * expected_count
+
+
+def parse_numbered_list(text: str, expected_count: int) -> list:
+    """Parse numbered list from AI response"""
+    lines = text.strip().split('\n')
+    results = []
+
+    for line in lines:
+        # Match patterns like "1. translation" or "1) translation"
+        match = re.match(r'^\d+[\.\)]\s*(.+)$', line.strip())
+        if match:
+            results.append(match.group(1))
+
+    # Pad with empty strings if needed
+    while len(results) < expected_count:
+        results.append("")
+
+    return results[:expected_count]
+
+
+def create_bilingual_srt(
+    translated_segments: list,
+    output_path: str,
+    original_first: bool = True
+) -> str:
+    """Create bilingual SRT file with both languages"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for i, seg in enumerate(translated_segments, 1):
+            f.write(f"{i}\n")
+            f.write(f"{format_timestamp(seg['start'])} --> {format_timestamp(seg['end'])}\n")
+
+            if original_first:
+                f.write(f"{seg['text']}\n")
+                f.write(f"{seg.get('translation', seg['text'])}\n")
+            else:
+                f.write(f"{seg.get('translation', seg['text'])}\n")
+                f.write(f"{seg['text']}\n")
+
+            f.write("\n")
+
+    return output_path
+
+
+def create_mono_srt(
+    segments: list,
+    output_path: str,
+    use_translation: bool = False
+) -> str:
+    """Create single-language SRT file"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for i, seg in enumerate(segments, 1):
+            f.write(f"{i}\n")
+            f.write(f"{format_timestamp(seg['start'])} --> {format_timestamp(seg['end'])}\n")
+
+            text = seg.get('translation', seg['text']) if use_translation else seg['text']
+            f.write(f"{text}\n\n")
+
+    return output_path
+
+
+# =============================================================================
+# SOCIAL MEDIA CONTENT GENERATION (New Feature)
+# =============================================================================
+
+def generate_social_content(chapter: dict, transcript_text: str) -> str:
+    """Generate platform-specific social media content."""
+    prompt = f"""Based on this video chapter, generate social media content.
+
+Chapter: {chapter['title']}
+Duration: {int(chapter['duration'])} seconds
+Summary: {chapter['summary']}
+Keywords: {', '.join(chapter.get('keywords', []))}
+
+Transcript excerpt:
+{transcript_text[:2000]}
+
+Generate content for:
+
+1. TikTok/Reels (15-60 words)
+   - Hook in first line
+   - 3 key points
+   - Call to action
+   - 5 hashtags
+
+2. YouTube Shorts Description (50-100 words)
+   - Compelling title
+   - What viewers will learn
+   - 10 hashtags
+
+3. Instagram Caption (100-150 words)
+   - Engaging opener
+   - Value points
+   - Question for engagement
+   - 15 hashtags
+
+4. Tweet (280 chars max)
+   - Single impactful statement
+   - 3 hashtags
+
+Format as Markdown with clear sections."""
+
+    content = ""
+
+    if settings.gemini_api_key:
+        try:
+            try:
+                from google import genai
+                client = genai.Client(api_key=settings.gemini_api_key)
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash-exp',
+                    contents=prompt
+                )
+                content = response.text
+            except ImportError:
+                import google.generativeai as genai
+                genai.configure(api_key=settings.gemini_api_key)
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                content = response.text
+        except Exception as e:
+            print(f"Content generation error (Gemini): {e}")
+
+    if not content and settings.openai_api_key:
+        try:
+            import openai
+            client = openai.OpenAI(api_key=settings.openai_api_key)
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1500
+            )
+            content = response.choices[0].message.content
+        except Exception as e:
+            print(f"Content generation error (OpenAI): {e}")
+
+    # Fallback template
+    if not content:
+        content = f"""# {chapter['title']}
+
+## Quick Summary
+{chapter['summary']}
+
+## Keywords
+{', '.join(chapter.get('keywords', []))}
+
+## Social Media Templates
+
+### TikTok/Reels
+[Auto-generation unavailable - AI API key required]
+
+### YouTube Shorts
+[Auto-generation unavailable - AI API key required]
+
+### Instagram
+[Auto-generation unavailable - AI API key required]
+
+---
+Generated from video chapter: {int(chapter['start'])}s - {int(chapter['end'])}s
+"""
+
+    return content
+
+
+# =============================================================================
+# MULTI-OUTPUT FORMAT FUNCTIONS (New Feature)
+# =============================================================================
+
+def generate_clip_raw(
+    input_file: str,
+    output_file: str,
+    start: float,
+    duration: float
+):
+    """Generate clip without subtitles"""
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-i", input_file,
+        "-ss", str(start),
+        "-t", str(duration),
+        "-vf", f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale={settings.output_width}:{settings.output_height}",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", str(settings.output_crf),
+        "-c:a", "aac",
+        "-b:a", "128k",
+        output_file
+    ]
+    subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+
+
+def generate_clip_with_subtitles(
+    input_file: str,
+    output_file: str,
+    srt_file: str,
+    start: float,
+    duration: float,
+    style: dict
+):
+    """Generate clip with burned-in subtitles"""
+    # Escape special characters in path for FFmpeg
+    escaped_srt = srt_file.replace("\\", "/").replace(":", "\\:")
+
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-i", input_file,
+        "-ss", str(start),
+        "-t", str(duration),
+        "-vf", (
+            f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
+            f"scale={settings.output_width}:{settings.output_height},"
+            f"subtitles={escaped_srt}:force_style='{style['style']}',"
+            f"eq=contrast=1.05:saturation=1.1"
+        ),
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", str(settings.output_crf),
+        "-c:a", "aac",
+        "-b:a", "128k",
+        output_file
+    ]
+    subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+
+
+def filter_segments_for_chapter(
+    segments: list,
+    chapter_start: float,
+    chapter_end: float
+) -> list:
+    """Filter and adjust segments for a specific chapter time range"""
+    chapter_segments = []
+
+    for seg in segments:
+        seg_start = seg["start"]
+        seg_end = seg["end"]
+
+        # Check if segment overlaps with chapter
+        if seg_start < chapter_end and seg_end > chapter_start:
+            # Calculate relative timing
+            new_start = max(0, seg_start - chapter_start)
+            new_end = min(chapter_end - chapter_start, seg_end - chapter_start)
+
+            if new_end > new_start and (new_end - new_start) >= 0.1:
+                chapter_segments.append({
+                    "start": new_start,
+                    "end": new_end,
+                    "text": seg["text"].strip(),
+                    "translation": seg.get("translation", "")
+                })
+
+    return chapter_segments
+
+
+def process_single_chapter(
+    job_dir: str,
+    chapter: dict,
+    segments: list,
+    options: dict
+) -> dict:
+    """
+    Generate all output formats for a single chapter.
+    Returns paths to all generated files.
+    """
+    import json as json_module
+
+    chapter_id = chapter["id"]
+    input_file = os.path.join(job_dir, "input.mp4")
+
+    # Safe filename from chapter title
+    safe_title = re.sub(r'[^\w\s-]', '', chapter["title"])[:30].strip().replace(' ', '_')
+
+    # Output paths
+    outputs = {
+        "clip_raw": os.path.join(job_dir, f"{chapter_id}_raw.mp4"),
+        "clip_subtitled": os.path.join(job_dir, f"{chapter_id}_subtitled.mp4"),
+        "srt_original": os.path.join(job_dir, f"{chapter_id}.srt"),
+        "srt_bilingual": os.path.join(job_dir, f"{chapter_id}_bilingual.srt"),
+        "thumbnail": os.path.join(job_dir, f"{chapter_id}_thumb.jpg"),
+        "summary": os.path.join(job_dir, f"{chapter_id}_summary.md")
+    }
+
+    # Filter segments for this chapter
+    chapter_segments = filter_segments_for_chapter(
+        segments,
+        chapter["start"],
+        chapter["end"]
+    )
+
+    # Get caption style
+    style = CAPTION_STYLES.get(
+        options.get("caption_style", "default"),
+        CAPTION_STYLES["default"]
+    )
+
+    # Apply dynamic splitting if needed
+    if style.get("dynamic"):
+        chapter_segments = split_segments_for_style(chapter_segments, style)
+
+    # 1. Generate original SRT (always)
+    create_mono_srt(chapter_segments, outputs["srt_original"])
+
+    # 2. Translation (if enabled)
+    translated_segments = chapter_segments
+    if options.get("enable_translation", settings.enable_translation):
+        translated_segments = translate_subtitles_batch(chapter_segments)
+        create_bilingual_srt(translated_segments, outputs["srt_bilingual"])
+    else:
+        outputs["srt_bilingual"] = None
+
+    # 3. Generate raw clip (no subtitles) - if multi-output enabled
+    if options.get("enable_multi_output", settings.enable_multi_output):
+        generate_clip_raw(
+            input_file,
+            outputs["clip_raw"],
+            chapter["start"],
+            chapter["duration"]
+        )
+    else:
+        outputs["clip_raw"] = None
+
+    # 4. Generate subtitled clip
+    # Write temp SRT for FFmpeg (with adjusted timing)
+    temp_srt = os.path.join(job_dir, f"{chapter_id}_temp.srt")
+    if outputs["srt_bilingual"]:
+        # Use bilingual if available
+        with open(outputs["srt_bilingual"], 'r', encoding='utf-8') as f:
+            srt_content = f.read()
+        with open(temp_srt, 'w', encoding='utf-8') as f:
+            f.write(srt_content)
+    else:
+        with open(outputs["srt_original"], 'r', encoding='utf-8') as f:
+            srt_content = f.read()
+        with open(temp_srt, 'w', encoding='utf-8') as f:
+            f.write(srt_content)
+
+    generate_clip_with_subtitles(
+        input_file,
+        outputs["clip_subtitled"],
+        temp_srt,
+        chapter["start"],
+        chapter["duration"],
+        style
+    )
+
+    # Clean up temp SRT
+    if os.path.exists(temp_srt):
+        os.remove(temp_srt)
+
+    # 5. Generate thumbnail
+    generate_thumbnail(
+        outputs["clip_subtitled"],
+        outputs["thumbnail"],
+        chapter["duration"] / 2
+    )
+
+    # 6. Generate social content (if enabled)
+    if options.get("enable_social_content", settings.enable_social_content):
+        transcript_text = " ".join([seg["text"] for seg in chapter_segments])
+        content = generate_social_content(chapter, transcript_text)
+        with open(outputs["summary"], 'w', encoding='utf-8') as f:
+            f.write(content)
+    else:
+        outputs["summary"] = None
+
+    # Build result with all file info
+    return {
+        "id": chapter_id,
+        "title": chapter["title"],
+        "duration": chapter["duration"],
+        "start": chapter["start"],
+        "end": chapter["end"],
+        "summary": chapter.get("summary", ""),
+        "keywords": chapter.get("keywords", []),
+        "files": {
+            "raw": f"{chapter_id}_raw.mp4" if outputs["clip_raw"] else None,
+            "subtitled": f"{chapter_id}_subtitled.mp4",
+            "srt": f"{chapter_id}.srt",
+            "srt_bilingual": f"{chapter_id}_bilingual.srt" if outputs["srt_bilingual"] else None,
+            "thumbnail": f"{chapter_id}_thumb.jpg",
+            "summary": f"{chapter_id}_summary.md" if outputs["summary"] else None
+        },
+        "chapter": chapter
+    }
+
+
 def create_clip_srt(original_srt: str, clip_srt: str, start_time: float, duration: float):
     """Create a new SRT file adjusted for clip timing"""
     with open(original_srt, "r", encoding="utf-8") as f:
@@ -923,3 +1677,280 @@ def split_segments_for_style(segments: list, style: dict) -> list:
             current_time += chunk_duration
 
     return new_segments
+
+
+# =============================================================================
+# TWO-PHASE CELERY TASKS (New Feature)
+# =============================================================================
+
+@celery_app.task(bind=True)
+def process_video_phase1(self, job_id: str, url: str, options: dict = None):
+    """
+    Phase 1: Download + Transcribe + Generate Chapters
+    Stops at 'chapters_ready' state for user selection.
+    """
+    import json as json_module
+
+    options = options or {}
+
+    # Paths
+    data_dir = settings.data_dir
+    job_dir = os.path.join(data_dir, "jobs", job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    input_file = os.path.join(job_dir, "input.mp4")
+    srt_file = os.path.join(job_dir, "input.srt")
+
+    try:
+        # Step 1: Download video
+        log_progress(job_dir, "🚀 Starting Phase 1: Download & Analyze...")
+        log_progress(job_dir, f"📎 URL: {url}")
+        self.update_state(state="DOWNLOADING", meta={"progress": 10})
+        log_progress(job_dir, "⬇️ Downloading video from YouTube...")
+
+        # Download with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                download_cmd = [
+                    "yt-dlp",
+                    "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]",
+                    "--merge-output-format", "mp4",
+                    "--no-playlist",
+                    "--max-filesize", "500M",
+                    "-o", input_file,
+                    url
+                ]
+                subprocess.run(download_cmd, check=True, capture_output=True, timeout=600)
+                log_progress(job_dir, "✅ Download complete!")
+                break
+            except subprocess.TimeoutExpired:
+                if attempt < max_retries - 1:
+                    log_progress(job_dir, f"⚠️ Download timeout, retrying... (attempt {attempt + 2}/{max_retries})")
+                else:
+                    raise Exception("Download timeout after multiple retries")
+            except subprocess.CalledProcessError as e:
+                if attempt < max_retries - 1:
+                    log_progress(job_dir, f"⚠️ Download failed, retrying... (attempt {attempt + 2}/{max_retries})")
+                else:
+                    raise Exception(f"Download failed: {e.stderr.decode() if e.stderr else str(e)}")
+
+        # Get video duration
+        video_duration = 0
+        try:
+            probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", input_file]
+            duration_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            video_duration = float(duration_result.stdout.strip())
+            log_progress(job_dir, f"📹 Video duration: {int(video_duration//60)}m {int(video_duration%60)}s")
+        except:
+            video_duration = 600  # Default 10 minutes if probe fails
+
+        # Step 2: Generate subtitles with Whisper
+        self.update_state(state="TRANSCRIBING", meta={"progress": 30})
+        log_progress(job_dir, f"🎧 Loading Whisper model ({settings.whisper_model})...")
+
+        import whisper
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        log_progress(job_dir, f"⚙️ Using device: {device.upper()}")
+
+        model = whisper.load_model(settings.whisper_model, device=device)
+        log_progress(job_dir, "🎧 Transcribing audio... (this may take a while)")
+
+        transcribe_options = {
+            "verbose": False,
+            "fp16": False,
+            "compression_ratio_threshold": 2.4,
+            "no_speech_threshold": 0.6
+        }
+
+        if settings.whisper_language:
+            transcribe_options["language"] = settings.whisper_language
+            log_progress(job_dir, f"🌍 Language: {settings.whisper_language}")
+        else:
+            log_progress(job_dir, "🌍 Language: auto-detect")
+
+        result = model.transcribe(input_file, **transcribe_options)
+        segments = result["segments"]
+        log_progress(job_dir, f"📝 Found {len(segments)} subtitle segments")
+
+        # Write SRT file
+        with open(srt_file, "w", encoding="utf-8") as f:
+            for i, segment in enumerate(segments, 1):
+                start = format_timestamp(segment["start"])
+                end = format_timestamp(segment["end"])
+                text = segment["text"].strip()
+                f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+
+        # Show transcript preview
+        log_progress(job_dir, "📜 Transcript preview:")
+        preview_count = min(5, len(segments))
+        for i, seg in enumerate(segments[:preview_count]):
+            time_str = f"{int(seg['start']//60):02d}:{int(seg['start']%60):02d}"
+            text_preview = seg["text"].strip()[:60]
+            if len(seg["text"].strip()) > 60:
+                text_preview += "..."
+            log_progress(job_dir, f"   [{time_str}] {text_preview}")
+
+        # Free up memory
+        try:
+            del model
+            import gc
+            gc.collect()
+            log_progress(job_dir, "🧹 Freed up memory (unloaded Whisper model)")
+        except:
+            pass
+
+        # Apply text correction
+        log_progress(job_dir, "🧹 Running text correction...")
+        use_llm_correction = options.get("use_ai_detection", False)
+        segments = correct_text_pipeline(segments, use_llm=use_llm_correction)
+        log_progress(job_dir, "✅ Transcription complete!")
+
+        # Step 3: Generate Chapters (NEW)
+        self.update_state(state="ANALYZING", meta={"progress": 50})
+        log_progress(job_dir, "🧠 Analyzing video for chapters...")
+
+        use_ai = options.get("use_ai_detection", True)
+        chapters, method = smart_chapter_detection(segments, video_duration, use_ai)
+
+        if method == "ai":
+            log_progress(job_dir, f"🤖 AI-powered chapter analysis: Found {len(chapters)} chapters")
+        else:
+            log_progress(job_dir, f"📊 Rule-based chapter analysis: Found {len(chapters)} chapters")
+
+        # Log chapter preview
+        log_progress(job_dir, "📚 Chapters detected:")
+        for ch in chapters[:5]:
+            start_str = f"{int(ch['start']//60):02d}:{int(ch['start']%60):02d}"
+            end_str = f"{int(ch['end']//60):02d}:{int(ch['end']%60):02d}"
+            log_progress(job_dir, f"   [{start_str} - {end_str}] {ch['title']}")
+
+        if len(chapters) > 5:
+            log_progress(job_dir, f"   ... and {len(chapters) - 5} more chapters")
+
+        # Save chapters for user selection
+        chapters_file = os.path.join(job_dir, "chapters.json")
+        with open(chapters_file, "w", encoding="utf-8") as f:
+            json_module.dump(chapters, f, indent=2, ensure_ascii=False)
+
+        # Save segments for later use
+        segments_file = os.path.join(job_dir, "segments.json")
+        with open(segments_file, "w", encoding="utf-8") as f:
+            json_module.dump(segments, f, indent=2, ensure_ascii=False)
+
+        # Save video duration
+        metadata_file = os.path.join(job_dir, "metadata.json")
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            json_module.dump({
+                "video_duration": video_duration,
+                "segment_count": len(segments),
+                "chapter_count": len(chapters),
+                "detection_method": method
+            }, f, indent=2)
+
+        self.update_state(state="CHAPTERS_READY", meta={
+            "progress": 60,
+            "chapters": chapters,
+            "video_duration": video_duration
+        })
+
+        log_progress(job_dir, "✅ Phase 1 complete! Waiting for chapter selection...")
+
+        return {
+            "status": "chapters_ready",
+            "chapters": chapters,
+            "video_duration": video_duration,
+            "segment_count": len(segments),
+            "detection_method": method
+        }
+
+    except Exception as e:
+        log_progress(job_dir, f"❌ Error: {str(e)}")
+        self.update_state(state="FAILED", meta={"error": str(e)})
+        raise
+
+
+@celery_app.task(bind=True)
+def process_selected_chapters(self, job_id: str, chapter_ids: list, options: dict = None):
+    """
+    Phase 2: Process only the selected chapters.
+    Generates clips with all output formats.
+    """
+    import json as json_module
+
+    options = options or {}
+
+    data_dir = settings.data_dir
+    job_dir = os.path.join(data_dir, "jobs", job_id)
+
+    try:
+        log_progress(job_dir, "🚀 Starting Phase 2: Processing selected chapters...")
+        log_progress(job_dir, f"📋 Selected chapters: {', '.join(chapter_ids)}")
+
+        # Load saved data
+        chapters_file = os.path.join(job_dir, "chapters.json")
+        segments_file = os.path.join(job_dir, "segments.json")
+
+        with open(chapters_file, "r", encoding="utf-8") as f:
+            all_chapters = json_module.load(f)
+        with open(segments_file, "r", encoding="utf-8") as f:
+            segments = json_module.load(f)
+
+        # Filter selected chapters
+        selected = [ch for ch in all_chapters if ch["id"] in chapter_ids]
+
+        if not selected:
+            raise Exception("No valid chapters selected")
+
+        log_progress(job_dir, f"🎬 Processing {len(selected)} chapter(s)...")
+
+        generated_clips = []
+        total = len(selected)
+
+        for idx, chapter in enumerate(selected, 1):
+            log_progress(job_dir, f"")
+            log_progress(job_dir, f"🎬 [{idx}/{total}] Processing: {chapter['title']}")
+            log_progress(job_dir, f"   Duration: {int(chapter['duration'])}s")
+
+            self.update_state(state="PROCESSING", meta={
+                "progress": 60 + int(35 * idx / total),
+                "current_chapter": chapter["title"],
+                "current_index": idx,
+                "total_chapters": total
+            })
+
+            # Process this chapter (generate all output formats)
+            clip_data = process_single_chapter(
+                job_dir,
+                chapter,
+                segments,
+                options
+            )
+
+            generated_clips.append(clip_data)
+            log_progress(job_dir, f"   ✅ Chapter {idx} complete!")
+
+        # Save generated clips info
+        clips_file = os.path.join(job_dir, "clips.json")
+        with open(clips_file, "w", encoding="utf-8") as f:
+            json_module.dump(generated_clips, f, indent=2, ensure_ascii=False)
+
+        self.update_state(state="COMPLETED", meta={"progress": 100})
+
+        log_progress(job_dir, "")
+        log_progress(job_dir, "🎉 All chapters processed successfully!")
+        log_progress(job_dir, f"📁 Output files in: {job_dir}")
+
+        return {
+            "status": "completed",
+            "clips": generated_clips,
+            "total_clips": len(generated_clips)
+        }
+
+    except Exception as e:
+        log_progress(job_dir, f"❌ Error: {str(e)}")
+        self.update_state(state="FAILED", meta={"error": str(e)})
+        raise

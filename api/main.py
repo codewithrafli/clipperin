@@ -9,7 +9,13 @@ from pydantic import BaseModel
 from celery.result import AsyncResult
 
 from config import settings
-from tasks import celery_app, process_video, CAPTION_STYLES
+from tasks import (
+    celery_app,
+    process_video,
+    process_video_phase1,
+    process_selected_chapters,
+    CAPTION_STYLES
+)
 
 app = FastAPI(
     title="Auto Clipper Engine",
@@ -37,6 +43,15 @@ class JobCreate(BaseModel):
     caption_style: Optional[str] = "default"
     auto_detect: Optional[bool] = True
     use_ai_detection: Optional[bool] = False
+    # New options for two-phase flow
+    enable_translation: Optional[bool] = None  # Use settings default if None
+    enable_multi_output: Optional[bool] = None
+    enable_social_content: Optional[bool] = None
+
+
+class ChapterSelection(BaseModel):
+    chapter_ids: list[str]  # e.g., ["ch_1", "ch_3"]
+    options: Optional[dict] = {}
 
 
 class JobResponse(BaseModel):
@@ -48,6 +63,8 @@ class JobResponse(BaseModel):
     eta_seconds: Optional[int] = None
     error: Optional[str] = None
     clips: Optional[list] = []
+    chapters: Optional[list] = []  # NEW: Available chapters for selection
+    selected_chapters: Optional[list] = []  # NEW: User-selected chapter IDs
 
 
 @app.get("/")
@@ -90,20 +107,30 @@ def get_detection_modes():
 def create_job(job: JobCreate):
     """Submit a new video clipping job"""
     job_id = str(uuid.uuid4())[:8]
-    
-    # Start Celery task
+
+    # Build options
     options = {
         "caption_style": job.caption_style,
         "auto_detect": job.auto_detect,
-        "use_ai_detection": job.use_ai_detection
+        "use_ai_detection": job.use_ai_detection,
+        "enable_translation": job.enable_translation if job.enable_translation is not None else settings.enable_translation,
+        "enable_multi_output": job.enable_multi_output if job.enable_multi_output is not None else settings.enable_multi_output,
+        "enable_social_content": job.enable_social_content if job.enable_social_content is not None else settings.enable_social_content,
     }
     if job.clip_start is not None:
         options["clip_start"] = job.clip_start
     if job.clip_duration is not None:
         options["clip_duration"] = job.clip_duration
-    
-    task = process_video.delay(job_id, job.url, options)
-    
+
+    # Use two-phase flow if enabled (chapter selection)
+    if settings.enable_two_phase_flow and job.auto_detect:
+        task = process_video_phase1.delay(job_id, job.url, options)
+        flow_type = "two_phase"
+    else:
+        # Legacy single-phase flow
+        task = process_video.delay(job_id, job.url, options)
+        flow_type = "single_phase"
+
     # Store job info
     jobs_db[job_id] = {
         "id": job_id,
@@ -113,9 +140,14 @@ def create_job(job: JobCreate):
         "progress": 0,
         "created_at": datetime.utcnow().isoformat(),
         "eta_seconds": None,
-        "error": None
+        "error": None,
+        "clips": [],
+        "chapters": [],
+        "selected_chapters": [],
+        "flow_type": flow_type,
+        "options": options
     }
-    
+
     return JobResponse(**jobs_db[job_id])
 
 
@@ -207,15 +239,124 @@ def get_caption_styles():
 def get_suggested_clips(job_id: str):
     """Get AI-detected suggested clips for a job"""
     clips_file = os.path.join(settings.data_dir, "jobs", job_id, "suggested_clips.json")
-    
+
     if not os.path.exists(clips_file):
         return {"clips": [], "message": "No clips detected yet. Wait for transcription to complete."}
-    
+
     import json
     with open(clips_file, "r") as f:
         clips = json.load(f)
-    
+
     return {"clips": clips}
+
+
+# =============================================================================
+# CHAPTER SELECTION ENDPOINTS (New Feature)
+# =============================================================================
+
+@app.get("/api/jobs/{job_id}/chapters")
+def get_chapters(job_id: str):
+    """Get available chapters for selection"""
+    import json
+
+    if job_id not in jobs_db:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    update_job_status(job_id)
+    job = jobs_db[job_id]
+
+    chapters_file = os.path.join(settings.data_dir, "jobs", job_id, "chapters.json")
+
+    if not os.path.exists(chapters_file):
+        return {
+            "chapters": [],
+            "status": job["status"],
+            "can_select": False,
+            "message": "Chapters not ready yet. Wait for analysis to complete."
+        }
+
+    with open(chapters_file, "r", encoding="utf-8") as f:
+        chapters = json.load(f)
+
+    return {
+        "chapters": chapters,
+        "status": job["status"],
+        "can_select": job["status"] == "chapters_ready"
+    }
+
+
+@app.post("/api/jobs/{job_id}/select-chapters")
+def select_chapters(job_id: str, selection: ChapterSelection):
+    """User selects which chapters to process into clips"""
+    import json
+
+    if job_id not in jobs_db:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    update_job_status(job_id)
+    job = jobs_db[job_id]
+
+    if job["status"] != "chapters_ready":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be in 'chapters_ready' state. Current: {job['status']}"
+        )
+
+    # Load chapters to validate selection
+    chapters_file = os.path.join(settings.data_dir, "jobs", job_id, "chapters.json")
+    if not os.path.exists(chapters_file):
+        raise HTTPException(status_code=400, detail="No chapters available")
+
+    with open(chapters_file, "r", encoding="utf-8") as f:
+        chapters = json.load(f)
+
+    # Validate selected chapters exist
+    available_ids = {ch["id"] for ch in chapters}
+    invalid_ids = set(selection.chapter_ids) - available_ids
+    if invalid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid chapter IDs: {list(invalid_ids)}"
+        )
+
+    if not selection.chapter_ids:
+        raise HTTPException(status_code=400, detail="No chapters selected")
+
+    # Merge selection options with job options
+    options = job.get("options", {}).copy()
+    options.update(selection.options or {})
+
+    # Store selection and trigger Phase 2 processing
+    job["selected_chapters"] = selection.chapter_ids
+    job["status"] = "processing"
+
+    # Start Phase 2 task
+    task = process_selected_chapters.delay(
+        job_id,
+        selection.chapter_ids,
+        options
+    )
+    job["task_id"] = task.id  # Update task ID to Phase 2 task
+
+    return {
+        "message": "Processing started",
+        "selected": selection.chapter_ids,
+        "total_selected": len(selection.chapter_ids)
+    }
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Get current system settings (public subset)"""
+    return {
+        "enable_two_phase_flow": settings.enable_two_phase_flow,
+        "enable_translation": settings.enable_translation,
+        "target_language": settings.target_language,
+        "enable_multi_output": settings.enable_multi_output,
+        "enable_social_content": settings.enable_social_content,
+        "ai_available": bool(settings.gemini_api_key or settings.openai_api_key),
+        "whisper_model": settings.whisper_model
+    }
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -236,43 +377,74 @@ def delete_job(job_id: str):
 
 def update_job_status(job_id: str):
     """Update job status from Celery task"""
+    import json
+
     job = jobs_db.get(job_id)
     if not job:
         return
-    
+
     task_id = job.get("task_id")
     if not task_id:
         return
-    
+
     result = AsyncResult(task_id, app=celery_app)
-    
+
     if result.state == "PENDING":
         job["status"] = "pending"
         job["progress"] = 0
     elif result.state == "DOWNLOADING":
         job["status"] = "downloading"
-        job["progress"] = result.info.get("progress", 10)
+        job["progress"] = result.info.get("progress", 10) if result.info else 10
     elif result.state == "TRANSCRIBING":
         job["status"] = "transcribing"
-        job["progress"] = result.info.get("progress", 40)
+        job["progress"] = result.info.get("progress", 30) if result.info else 30
+    elif result.state == "ANALYZING":
+        job["status"] = "analyzing"
+        job["progress"] = result.info.get("progress", 50) if result.info else 50
+    elif result.state == "CHAPTERS_READY":
+        job["status"] = "chapters_ready"
+        job["progress"] = 60
+        # Load chapters from result or file
+        if result.info and isinstance(result.info, dict):
+            job["chapters"] = result.info.get("chapters", [])
+        else:
+            # Try loading from file
+            chapters_file = os.path.join(settings.data_dir, "jobs", job_id, "chapters.json")
+            if os.path.exists(chapters_file):
+                with open(chapters_file, "r", encoding="utf-8") as f:
+                    job["chapters"] = json.load(f)
     elif result.state == "PROCESSING":
         job["status"] = "processing"
-        job["progress"] = result.info.get("progress", 70)
+        info = result.info if result.info else {}
+        job["progress"] = info.get("progress", 70)
+        # Include current chapter info if available
+        if info.get("current_chapter"):
+            job["current_chapter"] = info.get("current_chapter")
+            job["current_index"] = info.get("current_index", 0)
+            job["total_chapters"] = info.get("total_chapters", 0)
     elif result.state == "COMPLETED" or result.state == "SUCCESS":
         job["status"] = "completed"
         job["progress"] = 100
         # Add clips to job info
         if isinstance(result.result, dict):
             job["clips"] = result.result.get("clips", [])
+        else:
+            # Try loading from file
+            clips_file = os.path.join(settings.data_dir, "jobs", job_id, "clips.json")
+            if os.path.exists(clips_file):
+                with open(clips_file, "r", encoding="utf-8") as f:
+                    job["clips"] = json.load(f)
     elif result.state == "FAILED" or result.state == "FAILURE":
         job["status"] = "failed"
         job["error"] = str(result.info) if result.info else "Unknown error"
+
     # Set ETA based on current step (rough estimates)
-    # Whisper doesn't provide real-time progress, so use step-based ETA
     eta_map = {
-        "pending": 300,      # 5 min estimate
-        "downloading": 120,  # 2 min for download
-        "transcribing": 300, # 5 min for transcription (varies by video length)
-        "processing": 60,    # 1 min for ffmpeg
+        "pending": 300,         # 5 min estimate
+        "downloading": 120,     # 2 min for download
+        "transcribing": 300,    # 5 min for transcription
+        "analyzing": 60,        # 1 min for chapter analysis
+        "chapters_ready": None, # Waiting for user
+        "processing": 120,      # 2 min for clip generation
     }
     job["eta_seconds"] = eta_map.get(job["status"])

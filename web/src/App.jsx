@@ -1,4 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import Header from './components/Header'
+import ClipCard from './components/ClipCard'
+import VideoPreview from './components/VideoPreview'
+import FilterControls from './components/FilterControls'
+import ChapterSelector from './components/ChapterSelector'
 
 const API_BASE = '/api'
 
@@ -12,12 +17,16 @@ function App() {
   const [selectedStyle, setSelectedStyle] = useState('default')
   const [aiAvailable, setAiAvailable] = useState(false)
   const [useAi, setUseAi] = useState(false)
-  const [sortBy, setSortBy] = useState('recent') // new: sorting
-  const [filterStatus, setFilterStatus] = useState('all') // new: filtering
-  const [previewVideo, setPreviewVideo] = useState(null) // new: video preview
-  const [previewJob, setPreviewJob] = useState(null) // new: job for preview
+  const [sortBy, setSortBy] = useState('recent')
+  const [filterStatus, setFilterStatus] = useState('all')
+  const [previewVideo, setPreviewVideo] = useState(null)
+  const [previewJob, setPreviewJob] = useState(null)
+  // Chapter selection state
+  const [chapterSelectJob, setChapterSelectJob] = useState(null)
+  const [chapters, setChapters] = useState([])
+  const [selectedClips, setSelectedClips] = useState(new Set())
 
-  // Fetch jobs and caption styles on mount
+  // Fetch data on mount
   useEffect(() => {
     fetchJobs()
     fetchCaptionStyles()
@@ -32,11 +41,35 @@ function App() {
       setLogs([])
       return
     }
-    
     fetchLogs(expandedJob)
     const interval = setInterval(() => fetchLogs(expandedJob), 2000)
     return () => clearInterval(interval)
   }, [expandedJob])
+
+  // Auto-detect jobs ready for chapter selection
+  useEffect(() => {
+    const readyJob = jobs.find(j => j.status === 'chapters_ready')
+    if (readyJob && readyJob.id !== chapterSelectJob?.id) {
+      fetchChapters(readyJob.id)
+      setChapterSelectJob(readyJob)
+    } else if (!readyJob && chapterSelectJob) {
+      // Clear if no more jobs in chapters_ready state
+      setChapterSelectJob(null)
+      setChapters([])
+    }
+  }, [jobs, chapterSelectJob])
+
+  const fetchChapters = useCallback(async (jobId) => {
+    try {
+      const res = await fetch(`${API_BASE}/jobs/${jobId}/chapters`)
+      if (res.ok) {
+        const data = await res.json()
+        setChapters(data.chapters || [])
+      }
+    } catch (err) {
+      console.error('Failed to fetch chapters:', err)
+    }
+  }, [])
 
   const fetchCaptionStyles = useCallback(async () => {
     try {
@@ -67,7 +100,7 @@ function App() {
       const res = await fetch(`${API_BASE}/jobs`)
       if (res.ok) {
         const data = await res.json()
-        setJobs(data.reverse()) // newest first
+        setJobs(data.reverse())
       }
     } catch (err) {
       console.error('Failed to fetch jobs:', err)
@@ -122,15 +155,13 @@ function App() {
     }
   }, [expandedJob, fetchJobs])
 
-  const downloadJob = useCallback((jobId) => {
-    window.open(`${API_BASE}/jobs/${jobId}/download?filename=output.mp4`, '_blank')
-  }, [])
-
-  function getStatusLabel(status) {
+  const getStatusLabel = (status) => {
     const labels = {
       pending: '⏳ Pending',
       downloading: '⬇️ Downloading',
       transcribing: '🎧 Transcribing',
+      analyzing: '🧠 Analyzing',
+      chapters_ready: '📚 Select Chapters',
       processing: '✂️ Processing',
       completed: '✅ Completed',
       failed: '❌ Failed'
@@ -146,20 +177,17 @@ function App() {
     return `~${mins}m ${secs}s remaining`
   }, [])
 
-  // Filtered and sorted jobs (memoized for performance)
+  // Filtered and sorted jobs
   const filteredAndSortedJobs = useMemo(() => {
     let filtered = jobs
 
-    // Apply status filter
     if (filterStatus !== 'all') {
       filtered = filtered.filter(job => job.status === filterStatus)
     }
 
-    // Apply sorting
     const sorted = [...filtered]
     switch (sortBy) {
       case 'recent':
-        // Already sorted by newest first from API
         break
       case 'oldest':
         sorted.reverse()
@@ -185,212 +213,247 @@ function App() {
     return sorted
   }, [jobs, filterStatus, sortBy])
 
+
+
+  const toggleClipSelection = useCallback((jobId, clip) => {
+    setSelectedClips(prev => {
+      const next = new Set(prev)
+      const clipId = `${jobId}_${clip.filename}` // Unique value
+      const existing = Array.from(next).find(c => c.id === clipId)
+      
+      if (existing) {
+        next.delete(existing)
+      } else {
+        next.add({
+          id: clipId,
+          jobId,
+          filename: clip.filename,
+          url: `${API_BASE}/jobs/${jobId}/download?filename=${clip.filename}`
+        })
+      }
+      return next
+    })
+  }, [])
+
+  const downloadSelected = useCallback(() => {
+    selectedClips.forEach((clip, index) => {
+      setTimeout(() => {
+        window.open(clip.url, '_blank')
+      }, index * 500) // Stagger downloads
+    })
+    // Optional: Clear selection after download?
+    // setSelectedClips(new Set())
+  }, [selectedClips])
+
+  const handleChapterSubmit = useCallback(() => {
+    setChapterSelectJob(null)
+    setChapters([])
+    fetchJobs() // Refresh to see processing status
+  }, [fetchJobs])
+
+  const handleChapterCancel = useCallback(() => {
+    if(!chapterSelectJob) return
+    // Maybe we want to keep it in the list but close the modal
+    // For now, just close the modal
+    setChapterSelectJob(null)
+    setChapters([])
+  }, [chapterSelectJob])
+
   return (
-    <div className="container">
-      <header className="header">
-        <h1>🎬 Auto Clipper</h1>
-        <p>Transform long videos into viral short clips</p>
-        <span className="badge">✨ No recurring fees - 100% offline</span>
-      </header>
-
-      <form className="submit-form" onSubmit={submitJob}>
-        <div className="input-group">
-          <input
-            type="text"
-            placeholder="Paste YouTube URL here..."
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            disabled={loading}
-          />
-          <select 
-            className="style-select"
-            value={selectedStyle}
-            onChange={(e) => setSelectedStyle(e.target.value)}
-            disabled={loading}
-          >
-            {captionStyles.map(style => (
-              <option key={style.id} value={style.id}>{style.name}</option>
-            ))}
-          </select>
-          <button type="submit" className="btn" disabled={loading || !url.trim()}>
-            {loading ? 'Submitting...' : 'Create Clip'}
-          </button>
-        </div>
-        <div className="form-options">
-          <label className="toggle-label">
-            <input
-              type="checkbox"
-              checked={useAi}
-              onChange={(e) => setUseAi(e.target.checked)}
-              disabled={!aiAvailable || loading}
-            />
-            <span>🤖 Use AI Detection</span>
-            {!aiAvailable && <span className="hint">(Add API key in .env)</span>}
-          </label>
-        </div>
-        <div className="form-hint">
-          {useAi && aiAvailable ? '🤖 AI-powered detection (Gemini/OpenAI)' : '📊 Rule-based detection (free)'} • 🎨 Caption: {captionStyles.find(s => s.id === selectedStyle)?.name || 'Default'}
-        </div>
-      </form>
-
-      <section className="jobs-section">
-        <div className="section-header">
-          <h2>Your Clips</h2>
-          {jobs.length > 0 && (
-            <div className="controls">
-              <select
-                className="filter-select"
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value)}
-              >
-                <option value="all">All Status</option>
-                <option value="completed">Completed</option>
-                <option value="processing">Processing</option>
-                <option value="failed">Failed</option>
-              </select>
-              <select
-                className="sort-select"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-              >
-                <option value="recent">Most Recent</option>
-                <option value="oldest">Oldest First</option>
-                <option value="completed">Completed First</option>
-                <option value="score">Highest Score</option>
-              </select>
+    <div className="min-h-screen px-4 py-8 max-w-7xl mx-auto">
+      <Header />
+      
+      {/* Chapter Selector Modal */}
+      {chapterSelectJob && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+               <ChapterSelector 
+                  jobId={chapterSelectJob.id}
+                  chapters={chapters}
+                  onSubmit={handleChapterSubmit}
+                  onCancel={handleChapterCancel}
+               />
             </div>
+         </div>
+      )}
+
+      {/* Batch Download Button */}
+      {selectedClips.size > 0 && (
+         <div className="fixed bottom-8 right-8 z-40">
+            <button 
+               onClick={downloadSelected}
+               className="btn-primary px-6 py-4 rounded-full shadow-2xl flex items-center gap-3 text-lg animate-bounce-subtle"
+            >
+               <span>⬇️</span>
+               <span>Download ({selectedClips.size})</span>
+            </button>
+         </div>
+      )}
+
+      {/* Submit Form */}
+      <div className="card p-8 mb-12 hover:shadow-2xl hover:shadow-accent/10">
+        <form onSubmit={submitJob} className="space-y-6">
+          <div className="flex gap-4 flex-col sm:flex-row">
+            <input
+              type="text"
+              placeholder="Paste YouTube URL here..."
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              disabled={loading}
+              className="flex-1 bg-dark-800 border-2 border-gray-700 rounded-xl px-6 py-4 text-lg focus:border-accent focus:outline-none transition-all"
+            />
+            <select
+              value={selectedStyle}
+              onChange={(e) => setSelectedStyle(e.target.value)}
+              disabled={loading}
+              className="bg-dark-800 border-2 border-gray-700 rounded-xl px-6 py-4 focus:border-accent focus:outline-none transition-colors min-w-[200px]"
+            >
+              {captionStyles.map(style => (
+                <option key={style.id} value={style.id}>{style.name}</option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              disabled={loading || !url.trim()}
+              className="btn-primary whitespace-nowrap px-8 py-4 text-lg"
+            >
+              {loading ? 'Submitting...' : 'Create Clip'}
+            </button>
+          </div>
+
+          <div className="flex items-center justify-center">
+            <label className="flex items-center gap-3 cursor-pointer px-4 py-2 rounded-lg hover:bg-dark-800 transition-colors">
+              <input
+                type="checkbox"
+                checked={useAi}
+                onChange={(e) => setUseAi(e.target.checked)}
+                disabled={!aiAvailable || loading}
+                className="w-5 h-5 accent-accent"
+              />
+              <span className="text-gray-300 font-medium">🤖 Use AI Detection</span>
+              {!aiAvailable && (
+                <span className="text-xs text-gray-500">(Add API key in .env)</span>
+              )}
+            </label>
+          </div>
+
+          <p className="text-center text-sm text-gray-500">
+            {useAi && aiAvailable ? '🤖 AI-powered detection (Gemini/OpenAI)' : '📊 Rule-based detection (free)'} • 🎨 Caption: {captionStyles.find(s => s.id === selectedStyle)?.name || 'Default'}
+          </p>
+        </form>
+      </div>
+
+      {/* Jobs Section */}
+      <section>
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
+          <h2 className="text-3xl font-bold">Your Clips</h2>
+          {jobs.length > 0 && (
+            <FilterControls
+              filterStatus={filterStatus}
+              setFilterStatus={setFilterStatus}
+              sortBy={sortBy}
+              setSortBy={setSortBy}
+            />
           )}
         </div>
 
         {jobs.length === 0 ? (
-          <div className="empty-state">
-            <p>No clips yet. Paste a YouTube URL above to get started!</p>
+          <div className="card p-16 text-center">
+            <p className="text-xl text-gray-500">
+              No clips yet. Paste a YouTube URL above to get started!
+            </p>
           </div>
         ) : (
-          <div className="jobs-list">
+          <div className="space-y-6">
             {filteredAndSortedJobs.map(job => (
-              <div key={job.id} className="job-card">
-                <div className="job-info">
-                  <div className="job-url">{job.url}</div>
-                  <div className={`job-status status-${job.status}`}>
-                    {['downloading', 'transcribing', 'processing'].includes(job.status) && (
-                      <span className="spinner" />
+              <div key={job.id} className="card p-6">
+                <div className="flex items-start gap-6 flex-col lg:flex-row">
+                  {/* Job Info */}
+                  <div className="flex-1 space-y-3">
+                    <div className="text-sm text-gray-500 truncate">{job.url}</div>
+
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm ${
+                        job.status === 'completed' ? 'bg-green-500/20 text-green-400' :
+                        job.status === 'failed' ? 'bg-red-500/20 text-red-400' :
+                        'bg-yellow-500/20 text-yellow-400'
+                      }`}>
+                        {['downloading', 'transcribing', 'processing'].includes(job.status) && (
+                          <span className="animate-spin">⚙️</span>
+                        )}
+                        {getStatusLabel(job.status)}
+                        {job.eta_seconds && (
+                          <span className="text-xs opacity-75">• {formatETA(job.eta_seconds)}</span>
+                        )}
+                      </span>
+                    </div>
+
+                    {job.status !== 'completed' && job.status !== 'failed' && (
+                      <div className="w-full bg-dark-800 rounded-full h-2 overflow-hidden">
+                        <div
+                          className="bg-gradient-to-r from-accent to-pink-500 h-full transition-all duration-500 shadow-lg shadow-accent/50"
+                          style={{ width: `${job.progress}%` }}
+                        />
+                      </div>
                     )}
-                    {getStatusLabel(job.status)}
-                    {job.eta_seconds && (
-                      <span className="eta"> • {formatETA(job.eta_seconds)}</span>
+
+                    {/* Logs */}
+                    <button
+                      onClick={() => setExpandedJob(expandedJob === job.id ? null : job.id)}
+                      className="text-sm text-gray-500 hover:text-accent transition-colors"
+                    >
+                      {expandedJob === job.id ? '▼ Hide Logs' : '▶ Show Logs'}
+                    </button>
+
+                    {expandedJob === job.id && (
+                      <div className="bg-dark-900 border border-gray-800 rounded-xl p-4 max-h-48 overflow-y-auto font-mono text-xs text-gray-400 space-y-1">
+                        {logs.length === 0 ? (
+                          <div>Waiting for logs...</div>
+                        ) : (
+                          logs.map((line, i) => <div key={i}>{line}</div>)
+                        )}
+                      </div>
+                    )}
+
+                    {job.error && (
+                      <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+                        {job.error}
+                      </div>
                     )}
                   </div>
-                  {job.status !== 'completed' && job.status !== 'failed' && (
-                    <div className="progress-bar">
-                      <div 
-                        className="progress-fill" 
-                        style={{ width: `${job.progress}%` }} 
-                      />
-                    </div>
-                  )}
-                  
-                  {/* Logs toggle button */}
-                  <button 
-                    className="btn-logs"
-                    onClick={() => setExpandedJob(expandedJob === job.id ? null : job.id)}
-                  >
-                    {expandedJob === job.id ? '▼ Hide Logs' : '▶ Show Logs'}
-                  </button>
-                  
-                  {/* Logs display */}
-                  {expandedJob === job.id && (
-                    <div className="logs-panel">
-                      {logs.length === 0 ? (
-                        <div className="log-line">Waiting for logs...</div>
-                      ) : (
-                        logs.map((line, i) => (
-                          <div key={i} className="log-line">{line}</div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                  
-                  {job.error && (
-                    <div style={{ color: 'var(--error)', fontSize: '0.75rem', marginTop: '0.5rem' }}>
-                      {job.error}
-                    </div>
-                  )}
-                </div>
-                <div className="job-actions">
-                  {job.status === 'completed' && (
-                    <div className="clips-grid">
-                      {job.clips && job.clips.length > 0 ? (
-                        job.clips.map((clip, idx) => (
-                           <div key={idx} className="clip-item">
-                              <div className="clip-thumbnail-wrapper">
-                                {clip.thumbnail ? (
-                                  <img
-                                    src={`${API_BASE}/jobs/${job.id}/thumbnail/${clip.thumbnail}`}
-                                    alt={`Clip ${idx+1}`}
-                                    loading="lazy"
-                                    className="clip-thumbnail"
-                                  />
-                                ) : (
-                                  <div className="clip-thumbnail-placeholder">
-                                    <span className="placeholder-icon">🎬</span>
-                                  </div>
-                                )}
-                                <button
-                                  className="preview-btn"
-                                  onClick={() => {
-                                    setPreviewVideo(clip)
-                                    setPreviewJob(job.id)
-                                  }}
-                                  title="Preview video"
-                                >
-                                  ▶️ Preview
-                                </button>
-                              </div>
-                              <div className="clip-content">
-                                <div className="clip-header">
-                                  <span className="clip-score">🔥 {clip.score}/10</span>
-                                  <span className="clip-duration">~30s</span>
-                                </div>
-                                <div className="clip-title" title={clip.hook}>
-                                  {clip.hook || `Viral Clip #${idx+1}`}
-                                </div>
-                                <div className="clip-actions">
-                                  <button
-                                    className="btn-preview"
-                                    onClick={() => {
-                                      setPreviewVideo(clip)
-                                      setPreviewJob(job.id)
-                                    }}
-                                  >
-                                    👁️ Preview
-                                  </button>
-                                  <button
-                                    className="btn-download-small"
-                                    onClick={() => window.open(`${API_BASE}/jobs/${job.id}/download?filename=${clip.filename}`, '_blank')}
-                                  >
-                                    ⬇️ Download
-                                  </button>
-                                </div>
-                              </div>
-                           </div>
-                        ))
-                      ) : (
-                        <button
-                          className="btn btn-download"
-                          onClick={() => downloadJob(job.id)}
-                        >
-                          Download Clip
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  <button 
-                    className="btn btn-delete" 
-                    onClick={() => deleteJob(job.id)}
-                  >
-                    🗑️
-                  </button>
+
+                  {/* Clips Grid or Delete Button */}
+                  <div className="flex gap-4 items-start">
+                    {job.status === 'completed' && job.clips && job.clips.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                        {job.clips.map((clip, idx) => {
+                           const clipId = `${job.id}_${clip.filename}`;
+                           const isSelected = Array.from(selectedClips).some(c => c.id === clipId);
+                           
+                           return (
+                              <ClipCard
+                                key={idx}
+                                clip={{...clip, isSelected}}
+                                jobId={job.id}
+                                onPreview={(clip) => {
+                                  setPreviewVideo(clip)
+                                  setPreviewJob(job.id)
+                                }}
+                                onToggleSelect={() => toggleClipSelection(job.id, clip)}
+                              />
+                           )
+                        })}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => deleteJob(job.id)}
+                      className="p-3 rounded-xl border-2 border-gray-700 hover:border-red-500 hover:bg-red-500 hover:scale-110 transition-all text-xl"
+                      title="Delete job"
+                    >
+                      🗑️
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -400,44 +463,11 @@ function App() {
 
       {/* Video Preview Modal */}
       {previewVideo && (
-        <div className="modal-overlay" onClick={() => setPreviewVideo(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>🎬 Preview Clip</h3>
-              <button className="modal-close" onClick={() => setPreviewVideo(null)}>
-                ✕
-              </button>
-            </div>
-            <div className="modal-body">
-              <video
-                key={previewVideo.filename}
-                controls
-                autoPlay
-                className="preview-video"
-                src={`${API_BASE}/jobs/${previewJob}/download?filename=${previewVideo.filename}`}
-              >
-                Your browser does not support video playback.
-              </video>
-              <div className="preview-info">
-                <div className="preview-details">
-                  <span className="detail-badge">🔥 Score: {previewVideo.score}/10</span>
-                  <span className="detail-badge">⏱️ ~30s</span>
-                </div>
-                <div className="preview-hook">
-                  <strong>Hook:</strong> {previewVideo.hook || 'N/A'}
-                </div>
-                <div className="preview-actions">
-                  <button
-                    className="btn btn-download-modal"
-                    onClick={() => window.open(`${API_BASE}/jobs/${previewJob}/download?filename=${previewVideo.filename}`, '_blank')}
-                  >
-                    ⬇️ Download Clip
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <VideoPreview
+          clip={previewVideo}
+          jobId={previewJob}
+          onClose={() => setPreviewVideo(null)}
+        />
       )}
     </div>
   )
