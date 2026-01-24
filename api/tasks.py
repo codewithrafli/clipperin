@@ -855,19 +855,32 @@ Generated from video chapter: {int(chapter['start'])}s - {int(chapter['end'])}s
 def get_crop_filter(width: int, height: int) -> str:
     """
     Generate FFmpeg filter complex for vertical (9:16) output.
-    Always produces full-frame 9:16 portrait by scaling to fill and center cropping.
-    Perfect for YouTube Shorts, TikTok, Reels.
+    Landscape videos get split-screen: top=full view, bottom=zoomed face.
+    Portrait videos get center cropped.
     """
     target_w = settings.output_width  # 1080
     target_h = settings.output_height  # 1920
+    half_h = target_h // 2  # 960
 
-    # Always scale to fill the 9:16 frame, then center crop
-    # force_original_aspect_ratio=increase ensures video fills the frame
-    # crop then cuts to exact 9:16 dimensions
-    return (
-        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
-        f"crop={target_w}:{target_h}"
-    )
+    input_ar = width / height
+    target_ar = target_w / target_h
+
+    if input_ar > target_ar:  # Landscape input -> split screen
+        # Split screen layout:
+        # Top half: Full video scaled to fit width
+        # Bottom half: Zoomed crop (center focus)
+        return (
+            f"split[top][bottom];"
+            f"[top]scale={target_w}:-2,pad={target_w}:{half_h}:0:(oh-ih)/2:black[top_out];"
+            f"[bottom]scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
+            f"crop={target_w}:{half_h}[bottom_out];"
+            f"[top_out][bottom_out]vstack"
+        )
+    else:  # Portrait / Square input -> center crop
+        return (
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+            f"crop={target_w}:{target_h}"
+        )
 
 def generate_clip_raw(
     input_file: str,
