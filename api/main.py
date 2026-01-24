@@ -140,28 +140,42 @@ def get_job(job_id: str):
 
 
 @app.get("/api/jobs/{job_id}/download")
-def download_job(job_id: str):
+def download_job(job_id: str, filename: str = "output.mp4"):
     """Download completed video"""
     if job_id not in jobs_db:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     update_job_status(job_id)
     job = jobs_db[job_id]
-    
+
     if job["status"] != "completed":
         raise HTTPException(status_code=400, detail=f"Job not ready. Status: {job['status']}")
-    
+
     file_path = os.path.join(settings.data_dir, "jobs", job_id, filename)
-    
+
     if not os.path.exists(file_path):
         # Fallback for backward compatibility
         if filename == "output.mp4":
             raise HTTPException(status_code=404, detail="Video not found")
-        # Try finding it in the clips list if possible? 
+        # Try finding it in the clips list if possible?
         # For now just return 404
         raise HTTPException(status_code=404, detail=f"File {filename} not found")
-    
+
     return FileResponse(file_path, media_type="video/mp4", filename=filename)
+
+
+@app.get("/api/jobs/{job_id}/thumbnail/{filename}")
+def get_thumbnail(job_id: str, filename: str):
+    """Get thumbnail for a clip"""
+    if job_id not in jobs_db:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    thumbnail_path = os.path.join(settings.data_dir, "jobs", job_id, filename)
+
+    if not os.path.exists(thumbnail_path):
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+
+    return FileResponse(thumbnail_path, media_type="image/jpeg")
 
 
 @app.get("/api/jobs/{job_id}/logs")

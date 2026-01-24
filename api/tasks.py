@@ -137,13 +137,13 @@ def analyze_transcript_for_clips(segments: list, target_duration: int = 30) -> l
     
     # Sort by score and get top clips
     scored_segments.sort(key=lambda x: x["score"], reverse=True)
-    
+
     # Group nearby segments for clip windows
     clips = []
     used_times = set()
-    
+
     for seg in scored_segments:
-        if len(clips) >= 5:
+        if len(clips) >= 9:  # Increased from 5 to 9 (like OpusClip)
             break
         
         start_time = max(0, seg["start"] - 2)  # Start 2 seconds before hook
@@ -362,16 +362,33 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         log_progress(job_dir, f"📎 URL: {url}")
         self.update_state(state="DOWNLOADING", meta={"progress": 10})
         log_progress(job_dir, "⬇️ Downloading video from YouTube...")
-        
-        download_cmd = [
-            "yt-dlp",
-            "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]",
-            "--merge-output-format", "mp4",
-            "-o", input_file,
-            url
-        ]
-        subprocess.run(download_cmd, check=True, capture_output=True)
-        log_progress(job_dir, "✅ Download complete!")
+
+        # Download with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                download_cmd = [
+                    "yt-dlp",
+                    "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]",
+                    "--merge-output-format", "mp4",
+                    "--no-playlist",  # Prevent downloading entire playlists
+                    "--max-filesize", "500M",  # Limit file size
+                    "-o", input_file,
+                    url
+                ]
+                subprocess.run(download_cmd, check=True, capture_output=True, timeout=600)
+                log_progress(job_dir, "✅ Download complete!")
+                break
+            except subprocess.TimeoutExpired:
+                if attempt < max_retries - 1:
+                    log_progress(job_dir, f"⚠️ Download timeout, retrying... (attempt {attempt + 2}/{max_retries})")
+                else:
+                    raise Exception("Download timeout after multiple retries")
+            except subprocess.CalledProcessError as e:
+                if attempt < max_retries - 1:
+                    log_progress(job_dir, f"⚠️ Download failed, retrying... (attempt {attempt + 2}/{max_retries})")
+                else:
+                    raise Exception(f"Download failed: {e.stderr.decode() if e.stderr else str(e)}")
         
         # Get video duration
         try:
@@ -386,12 +403,26 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         # Step 2: Generate subtitles with Whisper
         self.update_state(state="TRANSCRIBING", meta={"progress": 40})
         log_progress(job_dir, f"🎧 Loading Whisper model ({settings.whisper_model})...")
-        
+
         import whisper
-        model = whisper.load_model(settings.whisper_model)
+        import torch
+
+        # Optimize memory usage - use CPU if low RAM, otherwise GPU
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        log_progress(job_dir, f"⚙️ Using device: {device.upper()}")
+
+        model = whisper.load_model(settings.whisper_model, device=device)
         log_progress(job_dir, "🎧 Transcribing audio... (this may take a while)")
-        
-        result = model.transcribe(input_file, verbose=False)
+
+        # Transcribe with optimizations
+        result = model.transcribe(
+            input_file,
+            verbose=False,
+            language="auto",  # Auto-detect language
+            fp16=False,  # Disable FP16 for CPU compatibility
+            compression_ratio_threshold=2.4,  # Skip low-quality segments
+            no_speech_threshold=0.6  # Skip silence
+        )
         
         # Write SRT file
         segments = result["segments"]
@@ -473,10 +504,11 @@ def process_video(self, job_id: str, url: str, options: dict = None):
              log_progress(job_dir, f"📍 Processing manual clip at {options['clip_start']}s")
              
         elif options.get("auto_detect", True) and suggested_clips:
-            # Auto mode: Top 3 viral clips
-            log_progress(job_dir, f"🚀 Generating top {min(3, len(suggested_clips))} viral clips...")
-            
-            for i, clip in enumerate(suggested_clips[:3]):
+            # Auto mode: Top 9 viral clips (like OpusClip)
+            max_clips = min(9, len(suggested_clips))
+            log_progress(job_dir, f"🚀 Generating top {max_clips} viral clips...")
+
+            for i, clip in enumerate(suggested_clips[:9]):
                 clips_to_process.append({
                     "start": clip["start"],
                     "duration": clip["duration"],
@@ -573,9 +605,18 @@ def process_video(self, job_id: str, url: str, options: dict = None):
                 current_output
             ]
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-            
+
+            # Generate thumbnail from the middle of the clip
+            thumbnail_filename = f"thumb_{clip_id}.jpg"
+            thumbnail_path = os.path.join(job_dir, thumbnail_filename)
+            thumbnail_timestamp = clip_duration / 2  # Middle of the clip
+
+            log_progress(job_dir, f"📸 Generating thumbnail...")
+            generate_thumbnail(current_output, thumbnail_path, thumbnail_timestamp)
+
             generated_clips.append({
                 "filename": output_filename,
+                "thumbnail": thumbnail_filename if os.path.exists(thumbnail_path) else None,
                 "score": clip_info.get("score", 0),
                 "hook": clip_info.get("hook", "Clip"),
                 "path": current_output
@@ -742,6 +783,25 @@ def format_timestamp(seconds: float) -> str:
     secs = int(seconds % 60)
     millis = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def generate_thumbnail(video_path: str, thumbnail_path: str, timestamp: float = 0):
+    """Generate a thumbnail from video at specific timestamp"""
+    try:
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(timestamp),
+            "-i", video_path,
+            "-vframes", "1",
+            "-vf", "scale=320:-1",  # 320px width, maintain aspect ratio
+            "-q:v", "2",  # High quality
+            thumbnail_path
+        ]
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+        return True
+    except Exception as e:
+        print(f"Failed to generate thumbnail: {e}")
+        return False
 
 
 def split_segments_for_style(segments: list, style: dict) -> list:

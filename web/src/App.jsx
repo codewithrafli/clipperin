@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 
 const API_BASE = '/api'
 
@@ -12,6 +12,8 @@ function App() {
   const [selectedStyle, setSelectedStyle] = useState('default')
   const [aiAvailable, setAiAvailable] = useState(false)
   const [useAi, setUseAi] = useState(false)
+  const [sortBy, setSortBy] = useState('recent') // new: sorting
+  const [filterStatus, setFilterStatus] = useState('all') // new: filtering
 
   // Fetch jobs and caption styles on mount
   useEffect(() => {
@@ -34,7 +36,7 @@ function App() {
     return () => clearInterval(interval)
   }, [expandedJob])
 
-  async function fetchCaptionStyles() {
+  const fetchCaptionStyles = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/caption-styles`)
       if (res.ok) {
@@ -44,9 +46,9 @@ function App() {
     } catch (err) {
       console.error('Failed to fetch caption styles:', err)
     }
-  }
+  }, [])
 
-  async function fetchDetectionModes() {
+  const fetchDetectionModes = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/detection-modes`)
       if (res.ok) {
@@ -56,9 +58,9 @@ function App() {
     } catch (err) {
       console.error('Failed to fetch detection modes:', err)
     }
-  }
+  }, [])
 
-  async function fetchJobs() {
+  const fetchJobs = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/jobs`)
       if (res.ok) {
@@ -68,9 +70,9 @@ function App() {
     } catch (err) {
       console.error('Failed to fetch jobs:', err)
     }
-  }
+  }, [])
 
-  async function fetchLogs(jobId) {
+  const fetchLogs = useCallback(async (jobId) => {
     try {
       const res = await fetch(`${API_BASE}/jobs/${jobId}/logs`)
       if (res.ok) {
@@ -80,9 +82,9 @@ function App() {
     } catch (err) {
       console.error('Failed to fetch logs:', err)
     }
-  }
+  }, [])
 
-  async function submitJob(e) {
+  const submitJob = useCallback(async (e) => {
     e.preventDefault()
     if (!url.trim() || loading) return
 
@@ -106,9 +108,9 @@ function App() {
       console.error('Failed to submit job:', err)
     }
     setLoading(false)
-  }
+  }, [url, loading, selectedStyle, useAi, fetchJobs])
 
-  async function deleteJob(jobId) {
+  const deleteJob = useCallback(async (jobId) => {
     try {
       await fetch(`${API_BASE}/jobs/${jobId}`, { method: 'DELETE' })
       if (expandedJob === jobId) setExpandedJob(null)
@@ -116,11 +118,11 @@ function App() {
     } catch (err) {
       console.error('Failed to delete job:', err)
     }
-  }
+  }, [expandedJob, fetchJobs])
 
-  function downloadJob(jobId) {
-    window.open(`${API_BASE}/jobs/${jobId}/download`, '_blank')
-  }
+  const downloadJob = useCallback((jobId) => {
+    window.open(`${API_BASE}/jobs/${jobId}/download?filename=output.mp4`, '_blank')
+  }, [])
 
   function getStatusLabel(status) {
     const labels = {
@@ -134,13 +136,52 @@ function App() {
     return labels[status] || status
   }
 
-  function formatETA(seconds) {
+  const formatETA = useCallback((seconds) => {
     if (!seconds || seconds <= 0) return null
     if (seconds < 60) return `~${seconds}s remaining`
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
     return `~${mins}m ${secs}s remaining`
-  }
+  }, [])
+
+  // Filtered and sorted jobs (memoized for performance)
+  const filteredAndSortedJobs = useMemo(() => {
+    let filtered = jobs
+
+    // Apply status filter
+    if (filterStatus !== 'all') {
+      filtered = filtered.filter(job => job.status === filterStatus)
+    }
+
+    // Apply sorting
+    const sorted = [...filtered]
+    switch (sortBy) {
+      case 'recent':
+        // Already sorted by newest first from API
+        break
+      case 'oldest':
+        sorted.reverse()
+        break
+      case 'completed':
+        sorted.sort((a, b) => {
+          if (a.status === 'completed' && b.status !== 'completed') return -1
+          if (a.status !== 'completed' && b.status === 'completed') return 1
+          return 0
+        })
+        break
+      case 'score':
+        sorted.sort((a, b) => {
+          const aMaxScore = Math.max(...(a.clips || []).map(c => c.score || 0), 0)
+          const bMaxScore = Math.max(...(b.clips || []).map(c => c.score || 0), 0)
+          return bMaxScore - aMaxScore
+        })
+        break
+      default:
+        break
+    }
+
+    return sorted
+  }, [jobs, filterStatus, sortBy])
 
   return (
     <div className="container">
@@ -191,15 +232,41 @@ function App() {
       </form>
 
       <section className="jobs-section">
-        <h2>Your Clips</h2>
-        
+        <div className="section-header">
+          <h2>Your Clips</h2>
+          {jobs.length > 0 && (
+            <div className="controls">
+              <select
+                className="filter-select"
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+              >
+                <option value="all">All Status</option>
+                <option value="completed">Completed</option>
+                <option value="processing">Processing</option>
+                <option value="failed">Failed</option>
+              </select>
+              <select
+                className="sort-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="recent">Most Recent</option>
+                <option value="oldest">Oldest First</option>
+                <option value="completed">Completed First</option>
+                <option value="score">Highest Score</option>
+              </select>
+            </div>
+          )}
+        </div>
+
         {jobs.length === 0 ? (
           <div className="empty-state">
             <p>No clips yet. Paste a YouTube URL above to get started!</p>
           </div>
         ) : (
           <div className="jobs-list">
-            {jobs.map(job => (
+            {filteredAndSortedJobs.map(job => (
               <div key={job.id} className="job-card">
                 <div className="job-info">
                   <div className="job-url">{job.url}</div>
@@ -254,6 +321,15 @@ function App() {
                       {job.clips && job.clips.length > 0 ? (
                         job.clips.map((clip, idx) => (
                            <div key={idx} className="clip-item">
+                              {clip.thumbnail && (
+                                <div className="clip-thumbnail">
+                                  <img
+                                    src={`${API_BASE}/jobs/${job.id}/thumbnail/${clip.thumbnail}`}
+                                    alt={`Clip ${idx+1}`}
+                                    loading="lazy"
+                                  />
+                                </div>
+                              )}
                               <div className="clip-header">
                                 <span className="clip-score">🔥 {clip.score}/10</span>
                                 <span className="clip-duration">~{30}s</span>
@@ -261,8 +337,8 @@ function App() {
                               <div className="clip-title" title={clip.hook}>
                                 {clip.hook || `Viral Clip #${idx+1}`}
                               </div>
-                              <button 
-                                className="btn-download-small" 
+                              <button
+                                className="btn-download-small"
                                 onClick={() => window.open(`${API_BASE}/jobs/${job.id}/download?filename=${clip.filename}`, '_blank')}
                               >
                                 ⬇ Download
@@ -270,8 +346,8 @@ function App() {
                            </div>
                         ))
                       ) : (
-                        <button 
-                          className="btn btn-download" 
+                        <button
+                          className="btn btn-download"
                           onClick={() => downloadJob(job.id)}
                         >
                           Download Clip
