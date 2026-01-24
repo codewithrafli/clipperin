@@ -86,7 +86,7 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         
         # Write SRT file with progress logging
         segments = result["segments"]
-        log_progress(job_dir, f"📝 Writing {len(segments)} subtitle segments...")
+        log_progress(job_dir, f"📝 Found {len(segments)} subtitle segments")
         
         with open(srt_file, "w", encoding="utf-8") as f:
             for i, segment in enumerate(segments, 1):
@@ -94,6 +94,19 @@ def process_video(self, job_id: str, url: str, options: dict = None):
                 end = format_timestamp(segment["end"])
                 text = segment["text"].strip()
                 f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+        
+        # Show transcript preview in logs
+        log_progress(job_dir, "📜 Transcript preview:")
+        preview_count = min(5, len(segments))
+        for i, seg in enumerate(segments[:preview_count]):
+            time_str = f"{int(seg['start']//60):02d}:{int(seg['start']%60):02d}"
+            text_preview = seg["text"].strip()[:60]
+            if len(seg["text"].strip()) > 60:
+                text_preview += "..."
+            log_progress(job_dir, f"   [{time_str}] {text_preview}")
+        
+        if len(segments) > preview_count:
+            log_progress(job_dir, f"   ... and {len(segments) - preview_count} more segments")
         
         log_progress(job_dir, "✅ Transcription complete!")
         
