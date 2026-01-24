@@ -572,14 +572,19 @@ function App() {
           <ModalBody p={4}>
             {previewVideo && (
               <VStack spacing={4}>
-                <AspectRatio ratio={9/16} w="100%">
+                <Box w="100%" bg="black" borderRadius="12px" overflow="hidden">
                   <video
                     src={`${API_BASE}/jobs/${previewJob}/download?filename=${previewVideo.filename}`}
                     controls
                     autoPlay
-                    style={{ borderRadius: '12px' }}
+                    style={{
+                      width: '100%',
+                      maxHeight: '70vh',
+                      borderRadius: '12px',
+                      objectFit: 'contain'
+                    }}
                   />
-                </AspectRatio>
+                </Box>
                 <HStack w="100%" justify="space-between">
                   <VStack align="start" spacing={0}>
                     <Text fontWeight="bold">{previewVideo.title || 'Viral Clip'}</Text>

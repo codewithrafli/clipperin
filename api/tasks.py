@@ -854,32 +854,20 @@ Generated from video chapter: {int(chapter['start'])}s - {int(chapter['end'])}s
 
 def get_crop_filter(width: int, height: int) -> str:
     """
-    Generate FFmpeg filter complex for vertical crop.
-    - If Landscape (Wide): Scale to width, pad height with blurred background (Fit content)
-    - If Portrait (Tall): Scale and Crop to center (standard)
+    Generate FFmpeg filter complex for vertical (9:16) output.
+    Always produces full-frame 9:16 portrait by scaling to fill and center cropping.
+    Perfect for YouTube Shorts, TikTok, Reels.
     """
     target_w = settings.output_width  # 1080
-    target_h = settings.output_height # 1920
-    
-    # Calculate aspect ratios
-    input_ar = width / height
-    target_ar = target_w / target_h
-    
-    if input_ar > target_ar: # Landscape / Wide
-        # OPTIMIZED: Scale down background -> Blur -> Scale up
-        # This is strictly faster than blurring the full 1080x1920 frame
-        bg_w = int(target_w / 10)
-        bg_h = int(target_h / 10)
-        
-        return (
-            f"split[main][bg];"
-            f"[bg]scale={bg_w}:{bg_h},boxblur=10:10,scale={target_w}:{target_h}:flags=neighbor[bg_blurred];"
-            f"[main]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease[fg];"
-            f"[bg_blurred][fg]overlay=(W-w)/2:(H-h)/2"
-        )
-    else: # Portrait / Tall / Square
-        # Standard center crop
-        return f"crop=ih*{target_w}/{target_h}:ih:(iw-ih*{target_w}/{target_h})/2:0,scale={target_w}:{target_h}"
+    target_h = settings.output_height  # 1920
+
+    # Always scale to fill the 9:16 frame, then center crop
+    # force_original_aspect_ratio=increase ensures video fills the frame
+    # crop then cuts to exact 9:16 dimensions
+    return (
+        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{target_h}"
+    )
 
 def generate_clip_raw(
     input_file: str,
@@ -1143,6 +1131,7 @@ def process_single_chapter(
         outputs["summary"] = None
 
     # Build result with all file info
+    # Include filename and thumbnail at top level for frontend compatibility
     return {
         "id": chapter_id,
         "title": chapter["title"],
@@ -1151,6 +1140,11 @@ def process_single_chapter(
         "end": chapter["end"],
         "summary": chapter.get("summary", ""),
         "keywords": chapter.get("keywords", []),
+        # Top-level for frontend compatibility (ClipCard expects these)
+        "filename": f"{chapter_id}_subtitled.mp4",
+        "thumbnail": f"{chapter_id}_thumb.jpg",
+        "score": int(chapter.get("confidence", 0.8) * 10),  # Convert confidence to score
+        # Detailed file info
         "files": {
             "raw": f"{chapter_id}_raw.mp4" if outputs["clip_raw"] else None,
             "subtitled": f"{chapter_id}_subtitled.mp4",
