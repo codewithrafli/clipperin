@@ -57,8 +57,21 @@ CAPTION_STYLES = {
     },
     "capcut": {
         "name": "CapCut (Dynamic)",
-        "style": "FontName=Arial,FontSize=20,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=3,Shadow=0,Bold=1,Alignment=2,MarginV=60",
-        "dynamic": True
+        "style": "FontName=Impact,FontSize=24,PrimaryColour=&H00FFFFFF,SecondaryColour=&H00000000,OutlineColour=&H00000000,BackColour=&H80000000,Outline=4,Shadow=2,Bold=1,Alignment=2,MarginV=100,BorderStyle=4",
+        "dynamic": True,
+        "use_background": True
+    },
+    "capcut_yellow": {
+        "name": "CapCut Yellow Box",
+        "style": "FontName=Impact,FontSize=26,PrimaryColour=&H00000000,SecondaryColour=&H00000000,OutlineColour=&H00000000,BackColour=&H0000FFFF,Outline=0,Shadow=0,Bold=1,Alignment=2,MarginV=100,BorderStyle=4",
+        "dynamic": True,
+        "use_background": True
+    },
+    "capcut_red": {
+        "name": "CapCut Red Box",
+        "style": "FontName=Impact,FontSize=26,PrimaryColour=&H00FFFFFF,SecondaryColour=&H00000000,OutlineColour=&H00000000,BackColour=&H000000FF,Outline=0,Shadow=0,Bold=1,Alignment=2,MarginV=100,BorderStyle=4",
+        "dynamic": True,
+        "use_background": True
     }
 }
 
@@ -585,31 +598,58 @@ def process_video(self, job_id: str, url: str, options: dict = None):
             # Filter segments for this clip
             clip_segments = []
             clip_end = clip_start + clip_duration
-            
+
             for seg in processed_segments:
-                 # Check overlap
+                 # Check overlap (more lenient)
                  seg_start = seg["start"]
                  seg_end = seg["end"]
-                 
-                 if seg_end > clip_start and seg_start < clip_end:
+
+                 # Include segment if ANY part overlaps with clip time range
+                 if seg_start < clip_end and seg_end > clip_start:
                      # Calculate relative timing
                      new_start = max(0, seg_start - clip_start)
                      new_end = min(clip_duration, seg_end - clip_start)
-                     
-                     if new_end > new_start:
+
+                     # Ensure valid duration (at least 0.1 seconds)
+                     if new_end > new_start and (new_end - new_start) >= 0.1:
                          clip_segments.append({
                              "start": new_start,
                              "end": new_end,
-                             "text": seg["text"]
+                             "text": seg["text"].strip()
                          })
-            
+
+            # Debug: log how many segments found
+            log_progress(job_dir, f"   Found {len(clip_segments)} subtitle segments for this clip")
+
+            # Fallback: if no segments found, try to find nearest segments
+            if len(clip_segments) == 0:
+                log_progress(job_dir, f"   ⚠️ No subtitles found! Searching for nearest segments...")
+                # Find segments within 5 seconds before/after clip
+                for seg in processed_segments:
+                    if abs(seg["start"] - clip_start) <= 5:
+                        new_start = max(0, seg["start"] - clip_start)
+                        new_end = min(clip_duration, seg["end"] - clip_start)
+                        if new_end > 0:
+                            clip_segments.append({
+                                "start": max(0, new_start),
+                                "end": new_end,
+                                "text": seg["text"].strip()
+                            })
+                            log_progress(job_dir, f"   ✅ Added fallback segment: {seg['text'][:50]}")
+
             # Write unique SRT file for this clip
             with open(clip_srt_file, "w", encoding="utf-8") as f:
-                for i, seg in enumerate(clip_segments, 1):
-                    start = format_timestamp(seg["start"])
-                    end = format_timestamp(seg["end"])
-                    text = seg["text"].strip()
-                    f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+                if len(clip_segments) == 0:
+                    # Ultimate fallback: add a placeholder subtitle
+                    log_progress(job_dir, f"   ⚠️ Still no subtitles, using placeholder")
+                    f.write(f"1\n{format_timestamp(0)} --> {format_timestamp(clip_duration)}\n[Viral Moment]\n\n")
+                else:
+                    for i, seg in enumerate(clip_segments, 1):
+                        start = format_timestamp(seg["start"])
+                        end = format_timestamp(seg["end"])
+                        text = seg["text"].strip()
+                        if text:  # Only write non-empty text
+                            f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
 
             # FFmpeg Command
             ffmpeg_cmd = [
@@ -833,42 +873,53 @@ def generate_thumbnail(video_path: str, thumbnail_path: str, timestamp: float = 
 def split_segments_for_style(segments: list, style: dict) -> list:
     """
     Split segments into shorter chunks for dynamic/CapCut style.
-    Aim for 3-5 words per chunk or max 20-30 characters.
+    Aim for 2-4 words per chunk for better readability.
     """
     # Only split if style is dynamic
     if not style.get("dynamic"):
         return segments
-        
+
     new_segments = []
-    
+
     for seg in segments:
         text = seg["text"].strip()
-        words = text.split()
-        
-        # If segment is already short, keep it
-        if len(words) <= 4 and len(text) < 30:
-            new_segments.append(seg)
+        if not text:  # Skip empty text
             continue
-            
+
+        words = text.split()
+
+        # If segment is already short (1-3 words), keep it
+        if len(words) <= 3:
+            new_segments.append({
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": text
+            })
+            continue
+
         # Calculate duration per word
         duration = seg["end"] - seg["start"]
         word_duration = duration / len(words) if words else 0
-        
-        # Split into chunks of 3-4 words
-        chunk_size = 4
+
+        # Split into chunks of 2-3 words (CapCut style)
+        chunk_size = 3
         current_time = seg["start"]
-        
+
         for i in range(0, len(words), chunk_size):
             chunk_words = words[i:i + chunk_size]
             chunk_text = " ".join(chunk_words)
             chunk_duration = len(chunk_words) * word_duration
-            
+
+            # Ensure minimum duration of 0.2 seconds
+            if chunk_duration < 0.2:
+                chunk_duration = 0.2
+
             new_segments.append({
                 "start": current_time,
-                "end": current_time + chunk_duration,
-                "text": chunk_text
+                "end": min(current_time + chunk_duration, seg["end"]),
+                "text": chunk_text.upper()  # CapCut uses UPPERCASE
             })
-            
+
             current_time += chunk_duration
-            
+
     return new_segments
