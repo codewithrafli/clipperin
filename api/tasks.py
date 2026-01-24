@@ -852,6 +852,35 @@ Generated from video chapter: {int(chapter['start'])}s - {int(chapter['end'])}s
 # MULTI-OUTPUT FORMAT FUNCTIONS (New Feature)
 # =============================================================================
 
+def get_crop_filter(width: int, height: int) -> str:
+    """
+    Generate FFmpeg filter complex for vertical crop.
+    - If Landscape (Wide): Scale to width, pad height with blurred background (Fit content)
+    - If Portrait (Tall): Scale and Crop to center (standard)
+    """
+    target_w = settings.output_width  # 1080
+    target_h = settings.output_height # 1920
+    
+    # Calculate aspect ratios
+    input_ar = width / height
+    target_ar = target_w / target_h
+    
+    if input_ar > target_ar: # Landscape / Wide
+        # OPTIMIZED: Scale down background -> Blur -> Scale up
+        # This is strictly faster than blurring the full 1080x1920 frame
+        bg_w = int(target_w / 10)
+        bg_h = int(target_h / 10)
+        
+        return (
+            f"split[main][bg];"
+            f"[bg]scale={bg_w}:{bg_h},boxblur=10:10,scale={target_w}:{target_h}:flags=neighbor[bg_blurred];"
+            f"[main]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease[fg];"
+            f"[bg_blurred][fg]overlay=(W-w)/2:(H-h)/2"
+        )
+    else: # Portrait / Tall / Square
+        # Standard center crop
+        return f"crop=ih*{target_w}/{target_h}:ih:(iw-ih*{target_w}/{target_h})/2:0,scale={target_w}:{target_h}"
+
 def generate_clip_raw(
     input_file: str,
     output_file: str,
@@ -859,12 +888,28 @@ def generate_clip_raw(
     duration: float
 ):
     """Generate clip without subtitles"""
+    
+    # Simple aspect check (not accurate without passing dimensions, but safe default)
+    # Ideally should pass dimensions, but let's try to probe or just use the blur default for now?
+    # Actually, we need to update the signature to accept dimensions or probe here.
+    # Since we can't easily change signature everywhere without breaking things, let's probe inside if needed.
+    
+    # Probe input dimensions
+    cmd_probe = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", input_file]
+    try:
+        dim_res = subprocess.run(cmd_probe, capture_output=True, text=True)
+        w, h = map(int, dim_res.stdout.strip().split('x'))
+    except:
+        w, h = 1920, 1080 # Fallback
+    
+    filter_str = get_crop_filter(w, h)
+
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-i", input_file,
         "-ss", str(start),
         "-t", str(duration),
-        "-vf", f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale={settings.output_width}:{settings.output_height}",
+        "-filter_complex", filter_str,
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", str(settings.output_crf),
@@ -884,28 +929,57 @@ def generate_clip_with_subtitles(
     style: dict
 ):
     """Generate clip with burned-in subtitles"""
+    print(f"DEBUG: generate_clip_with_subtitles - start={start}, duration={duration}", flush=True)
+
     # Escape special characters in path for FFmpeg
     escaped_srt = srt_file.replace("\\", "/").replace(":", "\\:")
+
+    # Probe dimensions
+    cmd_probe = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", input_file]
+    try:
+        dim_res = subprocess.run(cmd_probe, capture_output=True, text=True, timeout=30)
+        w, h = map(int, dim_res.stdout.strip().split('x'))
+        print(f"DEBUG: Video dimensions: {w}x{h}", flush=True)
+    except Exception as e:
+        print(f"DEBUG: Could not probe dimensions: {e}, using fallback", flush=True)
+        w, h = 1920, 1080 # Fallback
+
+    crop_filter = get_crop_filter(w, h)
+
+    # Combine crop filter with subtitles
+    base_filter = crop_filter + "[v_cropped]"
+
+    final_filter = (
+        f"{base_filter};"
+        f"[v_cropped]subtitles={escaped_srt}:force_style='{style['style']}',"
+        f"eq=contrast=1.05:saturation=1.1"
+    )
 
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-i", input_file,
         "-ss", str(start),
         "-t", str(duration),
-        "-vf", (
-            f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
-            f"scale={settings.output_width}:{settings.output_height},"
-            f"subtitles={escaped_srt}:force_style='{style['style']}',"
-            f"eq=contrast=1.05:saturation=1.1"
-        ),
+        "-filter_complex", final_filter,
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", str(settings.output_crf),
         "-c:a", "aac",
         "-b:a", "128k",
+        "-threads", "2",
         output_file
     ]
-    subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+
+    print(f"DEBUG: Running FFmpeg command...", flush=True)
+    try:
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            print(f"DEBUG: FFmpeg error: {result.stderr[-500:]}", flush=True)
+            raise subprocess.CalledProcessError(result.returncode, ffmpeg_cmd, result.stdout, result.stderr)
+        print(f"DEBUG: FFmpeg completed successfully", flush=True)
+    except subprocess.TimeoutExpired:
+        print(f"DEBUG: FFmpeg timed out after 10 minutes", flush=True)
+        raise Exception("FFmpeg processing timed out")
 
 
 def filter_segments_for_chapter(
@@ -952,6 +1026,9 @@ def process_single_chapter(
     chapter_id = chapter["id"]
     input_file = os.path.join(job_dir, "input.mp4")
 
+    log_progress(job_dir, f"  📁 Processing chapter: {chapter_id}")
+    log_progress(job_dir, f"  ⏱️ Time range: {chapter['start']:.1f}s - {chapter['end']:.1f}s ({chapter['duration']:.1f}s)")
+
     # Safe filename from chapter title
     safe_title = re.sub(r'[^\w\s-]', '', chapter["title"])[:30].strip().replace(' ', '_')
 
@@ -966,45 +1043,57 @@ def process_single_chapter(
     }
 
     # Filter segments for this chapter
+    log_progress(job_dir, f"  🔍 Filtering segments...")
     chapter_segments = filter_segments_for_chapter(
         segments,
         chapter["start"],
         chapter["end"]
     )
+    log_progress(job_dir, f"  ✅ Found {len(chapter_segments)} segments for this chapter")
 
     # Get caption style
     style = CAPTION_STYLES.get(
         options.get("caption_style", "default"),
         CAPTION_STYLES["default"]
     )
+    log_progress(job_dir, f"  🎨 Caption style: {style.get('name', 'Default')}")
 
     # Apply dynamic splitting if needed
     if style.get("dynamic"):
+        log_progress(job_dir, f"  ✂️ Applying dynamic splitting...")
         chapter_segments = split_segments_for_style(chapter_segments, style)
+        log_progress(job_dir, f"  ✅ Split into {len(chapter_segments)} segments")
 
     # 1. Generate original SRT (always)
+    log_progress(job_dir, f"  📝 Generating SRT file...")
     create_mono_srt(chapter_segments, outputs["srt_original"])
+    log_progress(job_dir, f"  ✅ SRT file created")
 
     # 2. Translation (if enabled)
     translated_segments = chapter_segments
     if options.get("enable_translation", settings.enable_translation):
+        log_progress(job_dir, f"  🌐 Translating subtitles...")
         translated_segments = translate_subtitles_batch(chapter_segments)
         create_bilingual_srt(translated_segments, outputs["srt_bilingual"])
+        log_progress(job_dir, f"  ✅ Translation complete")
     else:
         outputs["srt_bilingual"] = None
 
     # 3. Generate raw clip (no subtitles) - if multi-output enabled
     if options.get("enable_multi_output", settings.enable_multi_output):
+        log_progress(job_dir, f"  🎥 Generating raw clip...")
         generate_clip_raw(
             input_file,
             outputs["clip_raw"],
             chapter["start"],
             chapter["duration"]
         )
+        log_progress(job_dir, f"  ✅ Raw clip complete")
     else:
         outputs["clip_raw"] = None
 
     # 4. Generate subtitled clip
+    log_progress(job_dir, f"  🎬 Generating subtitled clip (this may take a while)...")
     # Write temp SRT for FFmpeg (with adjusted timing)
     temp_srt = os.path.join(job_dir, f"{chapter_id}_temp.srt")
     if outputs["srt_bilingual"]:
@@ -1027,24 +1116,29 @@ def process_single_chapter(
         chapter["duration"],
         style
     )
+    log_progress(job_dir, f"  ✅ Subtitled clip complete")
 
     # Clean up temp SRT
     if os.path.exists(temp_srt):
         os.remove(temp_srt)
 
     # 5. Generate thumbnail
+    log_progress(job_dir, f"  🖼️ Generating thumbnail...")
     generate_thumbnail(
         outputs["clip_subtitled"],
         outputs["thumbnail"],
         chapter["duration"] / 2
     )
+    log_progress(job_dir, f"  ✅ Thumbnail complete")
 
     # 6. Generate social content (if enabled)
     if options.get("enable_social_content", settings.enable_social_content):
+        log_progress(job_dir, f"  📱 Generating social content...")
         transcript_text = " ".join([seg["text"] for seg in chapter_segments])
         content = generate_social_content(chapter, transcript_text)
         with open(outputs["summary"], 'w', encoding='utf-8') as f:
             f.write(content)
+        log_progress(job_dir, f"  ✅ Social content complete")
     else:
         outputs["summary"] = None
 
@@ -1176,15 +1270,42 @@ def process_video(self, job_id: str, url: str, options: dict = None):
                 else:
                     raise Exception(f"Download failed: {e.stderr.decode() if e.stderr else str(e)}")
         
-        # Get video duration
+        # Get video duration and dimensions
+        video_width = 1920
+        video_height = 1080
         try:
-            probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", 
+            probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=width,height", 
                         "-of", "default=noprint_wrappers=1:nokey=1", input_file]
-            duration_result = subprocess.run(probe_cmd, capture_output=True, text=True)
-            video_duration = float(duration_result.stdout.strip())
-            log_progress(job_dir, f"📹 Video duration: {int(video_duration//60)}m {int(video_duration%60)}s")
-        except:
-            video_duration = 0
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            lines = probe_result.stdout.strip().split('\n')
+            
+            # Very basic parsing, assuming 3 lines (width, height, duration) or similar
+            # ffprobe output order can vary, so let's try json output for safety
+            json_cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,duration", "-of", "json", input_file]
+            json_result = subprocess.run(json_cmd, capture_output=True, text=True)
+            import json
+            info = json.loads(json_result.stdout)
+            stream = info["streams"][0]
+            video_width = int(stream.get("width", 1920))
+            video_height = int(stream.get("height", 1080))
+            # Duration can be in format or stream
+            if "duration" in stream:
+                 video_duration = float(stream["duration"])
+            else:
+                 # Fallback to format duration
+                 json_format_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", input_file]
+                 json_format_result = subprocess.run(json_format_cmd, capture_output=True, text=True)
+                 format_info = json.loads(json_format_result.stdout)
+                 video_duration = float(format_info["format"]["duration"])
+            
+            log_progress(job_dir, f"📹 Video info: {video_width}x{video_height}, {int(video_duration//60)}m {int(video_duration%60)}s")
+        except Exception as e:
+            log_progress(job_dir, f"⚠️ Probe error: {e}, using defaults")
+            video_duration = 600
+            
+        settings.video_width = video_width # Temporary storage (not thread safe but okay for Celery worker logic flow here if passed down)
+        options["video_width"] = video_width
+        options["video_height"] = video_height
         
         # Step 2: Generate subtitles with Whisper
         self.update_state(state="TRANSCRIBING", meta={"progress": 40})
@@ -1405,18 +1526,25 @@ def process_video(self, job_id: str, url: str, options: dict = None):
                         if text:  # Only write non-empty text
                             f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
 
+            # Probe clip dimensions (or use global if passed)
+            w, h = options.get("video_width", 1920), options.get("video_height", 1080)
+            
+            crop_filter = get_crop_filter(w, h)
+            base_filter = crop_filter + "[v_cropped]"
+            
+            final_filter = (
+                f"{base_filter};"
+                f"[v_cropped]subtitles={clip_srt_file}:force_style='{style['style']}',"
+                f"eq=contrast=1.05:saturation=1.1"
+            )
+
             # FFmpeg Command
             ffmpeg_cmd = [
                 "ffmpeg", "-y",
                 "-i", input_file,
                 "-ss", str(clip_start),
                 "-t", str(clip_duration),
-                "-vf", (
-                    f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
-                    f"scale={settings.output_width}:{settings.output_height},"
-                    f"subtitles={clip_srt_file}:force_style='{style['style']}',"
-                    f"eq=contrast=1.05:saturation=1.1"
-                ),
+                "-filter_complex", final_filter,
                 "-c:v", "libx264",
                 "-preset", "veryfast",
                 "-crf", str(settings.output_crf),
@@ -1873,13 +2001,14 @@ def process_video_phase1(self, job_id: str, url: str, options: dict = None):
         raise
 
 
-@celery_app.task(bind=True)
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
 def process_selected_chapters(self, job_id: str, chapter_ids: list, options: dict = None):
     """
     Phase 2: Process only the selected chapters.
     Generates clips with all output formats.
     """
     import json as json_module
+    import traceback
 
     options = options or {}
 
@@ -1887,17 +2016,30 @@ def process_selected_chapters(self, job_id: str, chapter_ids: list, options: dic
     job_dir = os.path.join(data_dir, "jobs", job_id)
 
     try:
+        print(f"DEBUG: Starting process_selected_chapters for {job_id}", flush=True)
         log_progress(job_dir, "🚀 Starting Phase 2: Processing selected chapters...")
         log_progress(job_dir, f"📋 Selected chapters: {', '.join(chapter_ids)}")
+        log_progress(job_dir, f"📂 Job directory: {job_dir}")
 
         # Load saved data
         chapters_file = os.path.join(job_dir, "chapters.json")
         segments_file = os.path.join(job_dir, "segments.json")
 
+        log_progress(job_dir, f"📖 Loading chapters from: {chapters_file}")
+        if not os.path.exists(chapters_file):
+            raise Exception(f"Chapters file not found: {chapters_file}")
+
         with open(chapters_file, "r", encoding="utf-8") as f:
             all_chapters = json_module.load(f)
+        log_progress(job_dir, f"✅ Loaded {len(all_chapters)} chapters")
+
+        log_progress(job_dir, f"📖 Loading segments from: {segments_file}")
+        if not os.path.exists(segments_file):
+            raise Exception(f"Segments file not found: {segments_file}")
+
         with open(segments_file, "r", encoding="utf-8") as f:
             segments = json_module.load(f)
+        log_progress(job_dir, f"✅ Loaded {len(segments)} segments")
 
         # Filter selected chapters
         selected = [ch for ch in all_chapters if ch["id"] in chapter_ids]

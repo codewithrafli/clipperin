@@ -36,6 +36,87 @@ app.add_middleware(
 jobs_db = {}
 
 
+def load_jobs_from_disk():
+    """Recover jobs from disk on startup"""
+    jobs_dir = os.path.join(settings.data_dir, "jobs")
+    if not os.path.exists(jobs_dir):
+        return
+
+    print(f"🔄 Recovering jobs from {jobs_dir}...")
+    
+    for job_id in os.listdir(jobs_dir):
+        job_path = os.path.join(jobs_dir, job_id)
+        if not os.path.isdir(job_path):
+            continue
+            
+        # skip if already loaded
+        if job_id in jobs_db:
+            continue
+
+        try:
+            # Try to reconstruct state from files
+            job_state = {
+                "id": job_id,
+                "url": "Unknown URL",
+                "status": "failed", # Default fallback
+                "progress": 0,
+                "created_at": datetime.fromtimestamp(os.path.getctime(job_path)).isoformat(),
+                "task_id": None, # Cannot recover task ID easily without persistence
+                "clips": [],
+                "chapters": [],
+                "selected_chapters": [],
+                "error": None
+            }
+
+            # 1. Look for metadata.json (created by Phase 1)
+            metadata_file = os.path.join(job_path, "metadata.json")
+            if os.path.exists(metadata_file):
+                import json
+                with open(metadata_file, "r") as f:
+                     meta = json.load(f)
+                     # If we have metadata, we at least finished Phase 1 semi-successfully
+                     # but we need to check chapters.json
+            
+            # 2. Check status based on files
+            clips_file = os.path.join(job_path, "clips.json")
+            chapters_file = os.path.join(job_path, "chapters.json")
+            
+            if os.path.exists(clips_file):
+                job_state["status"] = "completed"
+                job_state["progress"] = 100
+                import json
+                with open(clips_file, "r") as f:
+                    job_state["clips"] = json.load(f)
+            elif os.path.exists(chapters_file):
+                 job_state["status"] = "chapters_ready"
+                 job_state["progress"] = 60
+                 import json
+                 with open(chapters_file, "r") as f:
+                    job_state["chapters"] = json.load(f)
+            
+            # 3. Recover URL from logs
+            log_file = os.path.join(job_path, "progress.log")
+            if os.path.exists(log_file):
+                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                     content = f.read()
+                     # Look for URL pattern
+                     import re
+                     url_match = re.search(r"📎 URL: (https?://[^\s]+)", content)
+                     if url_match:
+                         job_state["url"] = url_match.group(1)
+            
+            jobs_db[job_id] = job_state
+            print(f"   ✅ Loaded job {job_id} ({job_state['status']})")
+            
+        except Exception as e:
+            print(f"   ❌ Failed to load job {job_id}: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    load_jobs_from_disk()
+
+
+
 class JobCreate(BaseModel):
     url: str
     clip_start: Optional[int] = None
@@ -423,17 +504,26 @@ def update_job_status(job_id: str):
             job["current_index"] = info.get("current_index", 0)
             job["total_chapters"] = info.get("total_chapters", 0)
     elif result.state == "COMPLETED" or result.state == "SUCCESS":
-        job["status"] = "completed"
-        job["progress"] = 100
-        # Add clips to job info
-        if isinstance(result.result, dict):
-            job["clips"] = result.result.get("clips", [])
+        # Check if the result indicates we're just ready for chapters (Phase 1 complete)
+        if isinstance(result.result, dict) and result.result.get("status") == "chapters_ready":
+            job["status"] = "chapters_ready"
+            job["progress"] = 60
+            if "chapters" in result.result:
+                job["chapters"] = result.result["chapters"]
+            elif "chapters" in result.info:
+                 job["chapters"] = result.info.get("chapters", [])
         else:
-            # Try loading from file
-            clips_file = os.path.join(settings.data_dir, "jobs", job_id, "clips.json")
-            if os.path.exists(clips_file):
-                with open(clips_file, "r", encoding="utf-8") as f:
-                    job["clips"] = json.load(f)
+            job["status"] = "completed"
+            job["progress"] = 100
+            # Add clips to job info
+            if isinstance(result.result, dict):
+                job["clips"] = result.result.get("clips", [])
+            else:
+                # Try loading from file
+                clips_file = os.path.join(settings.data_dir, "jobs", job_id, "clips.json")
+                if os.path.exists(clips_file):
+                    with open(clips_file, "r", encoding="utf-8") as f:
+                        job["clips"] = json.load(f)
     elif result.state == "FAILED" or result.state == "FAILURE":
         job["status"] = "failed"
         job["error"] = str(result.info) if result.info else "Unknown error"

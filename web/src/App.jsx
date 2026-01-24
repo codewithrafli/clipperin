@@ -1,9 +1,40 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import Header from './components/Header'
-import ClipCard from './components/ClipCard'
-import VideoPreview from './components/VideoPreview'
-import FilterControls from './components/FilterControls'
-import ChapterSelector from './components/ChapterSelector'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import {
+  Box,
+  Container,
+  VStack,
+  HStack,
+  Heading,
+  Text,
+  Input,
+  Select,
+  Button,
+  Badge,
+  Progress,
+  Grid,
+  GridItem,
+  IconButton,
+  Checkbox,
+  useDisclosure,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalCloseButton,
+  Card,
+  CardBody,
+  Image,
+  Flex,
+  Spacer,
+  Spinner,
+  Alert,
+  AlertIcon,
+  Code,
+  Collapse,
+  AspectRatio,
+  Tooltip,
+} from '@chakra-ui/react'
 
 const API_BASE = '/api'
 
@@ -21,12 +52,13 @@ function App() {
   const [filterStatus, setFilterStatus] = useState('all')
   const [previewVideo, setPreviewVideo] = useState(null)
   const [previewJob, setPreviewJob] = useState(null)
-  // Chapter selection state
   const [chapterSelectJob, setChapterSelectJob] = useState(null)
   const [chapters, setChapters] = useState([])
   const [selectedClips, setSelectedClips] = useState(new Set())
 
-  // Fetch data on mount
+  const { isOpen: isPreviewOpen, onOpen: onPreviewOpen, onClose: onPreviewClose } = useDisclosure()
+  const { isOpen: isChapterOpen, onOpen: onChapterOpen, onClose: onChapterClose } = useDisclosure()
+
   useEffect(() => {
     fetchJobs()
     fetchCaptionStyles()
@@ -35,7 +67,6 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
-  // Fetch logs when job is expanded
   useEffect(() => {
     if (!expandedJob) {
       setLogs([])
@@ -46,16 +77,24 @@ function App() {
     return () => clearInterval(interval)
   }, [expandedJob])
 
-  // Auto-detect jobs ready for chapter selection
+  const autoOpenedJobs = useRef(new Set())
+
   useEffect(() => {
     const readyJob = jobs.find(j => j.status === 'chapters_ready')
-    if (readyJob && readyJob.id !== chapterSelectJob?.id) {
+    if (readyJob && !autoOpenedJobs.current.has(readyJob.id) && readyJob.id !== chapterSelectJob?.id) {
+      if (chapterSelectJob) return
       fetchChapters(readyJob.id)
       setChapterSelectJob(readyJob)
-    } else if (!readyJob && chapterSelectJob) {
-      // Clear if no more jobs in chapters_ready state
-      setChapterSelectJob(null)
-      setChapters([])
+      autoOpenedJobs.current.add(readyJob.id)
+      onChapterOpen()
+    }
+    if (chapterSelectJob) {
+      const currentJobStatus = jobs.find(j => j.id === chapterSelectJob.id)?.status
+      if (currentJobStatus && currentJobStatus !== 'chapters_ready') {
+        setChapterSelectJob(null)
+        setChapters([])
+        onChapterClose()
+      }
     }
   }, [jobs, chapterSelectJob])
 
@@ -155,16 +194,30 @@ function App() {
     }
   }, [expandedJob, fetchJobs])
 
+  const getStatusColor = (status) => {
+    const colors = {
+      pending: 'yellow',
+      downloading: 'blue',
+      transcribing: 'purple',
+      analyzing: 'cyan',
+      chapters_ready: 'orange',
+      processing: 'blue',
+      completed: 'green',
+      failed: 'red'
+    }
+    return colors[status] || 'gray'
+  }
+
   const getStatusLabel = (status) => {
     const labels = {
-      pending: '⏳ Pending',
-      downloading: '⬇️ Downloading',
-      transcribing: '🎧 Transcribing',
-      analyzing: '🧠 Analyzing',
-      chapters_ready: '📚 Select Chapters',
-      processing: '✂️ Processing',
-      completed: '✅ Completed',
-      failed: '❌ Failed'
+      pending: 'Pending',
+      downloading: 'Downloading',
+      transcribing: 'Transcribing',
+      analyzing: 'Analyzing',
+      chapters_ready: 'Select Chapters',
+      processing: 'Processing',
+      completed: 'Completed',
+      failed: 'Failed'
     }
     return labels[status] || status
   }
@@ -177,18 +230,13 @@ function App() {
     return `~${mins}m ${secs}s remaining`
   }, [])
 
-  // Filtered and sorted jobs
   const filteredAndSortedJobs = useMemo(() => {
     let filtered = jobs
-
     if (filterStatus !== 'all') {
       filtered = filtered.filter(job => job.status === filterStatus)
     }
-
     const sorted = [...filtered]
     switch (sortBy) {
-      case 'recent':
-        break
       case 'oldest':
         sorted.reverse()
         break
@@ -209,18 +257,20 @@ function App() {
       default:
         break
     }
-
     return sorted
   }, [jobs, filterStatus, sortBy])
 
-
+  const handlePreview = (clip, jobId) => {
+    setPreviewVideo(clip)
+    setPreviewJob(jobId)
+    onPreviewOpen()
+  }
 
   const toggleClipSelection = useCallback((jobId, clip) => {
     setSelectedClips(prev => {
       const next = new Set(prev)
-      const clipId = `${jobId}_${clip.filename}` // Unique value
+      const clipId = `${jobId}_${clip.filename}`
       const existing = Array.from(next).find(c => c.id === clipId)
-      
       if (existing) {
         next.delete(existing)
       } else {
@@ -239,237 +289,575 @@ function App() {
     selectedClips.forEach((clip, index) => {
       setTimeout(() => {
         window.open(clip.url, '_blank')
-      }, index * 500) // Stagger downloads
+      }, index * 500)
     })
-    // Optional: Clear selection after download?
-    // setSelectedClips(new Set())
   }, [selectedClips])
 
-  const handleChapterSubmit = useCallback(() => {
-    setChapterSelectJob(null)
-    setChapters([])
-    fetchJobs() // Refresh to see processing status
-  }, [fetchJobs])
-
-  const handleChapterCancel = useCallback(() => {
-    if(!chapterSelectJob) return
-    // Maybe we want to keep it in the list but close the modal
-    // For now, just close the modal
-    setChapterSelectJob(null)
-    setChapters([])
-  }, [chapterSelectJob])
-
   return (
-    <div className="min-h-screen px-4 py-8 max-w-7xl mx-auto">
-      <Header />
-      
-      {/* Chapter Selector Modal */}
-      {chapterSelectJob && (
-         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-            <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-               <ChapterSelector 
-                  jobId={chapterSelectJob.id}
-                  chapters={chapters}
-                  onSubmit={handleChapterSubmit}
-                  onCancel={handleChapterCancel}
-               />
-            </div>
-         </div>
-      )}
+    <Box minH="100vh" bg="dark.900" py={8}>
+      <Container maxW="7xl">
+        {/* Header */}
+        <VStack spacing={2} mb={10}>
+          <Heading
+            as="h1"
+            size="2xl"
+            bgGradient="linear(to-r, brand.400, pink.400, orange.400)"
+            bgClip="text"
+            fontWeight="extrabold"
+          >
+            Auto Clipper
+          </Heading>
+          <Badge colorScheme="purple" variant="subtle" px={3} py={1} borderRadius="full">
+            No recurring fees - Run locally
+          </Badge>
+        </VStack>
 
-      {/* Batch Download Button */}
-      {selectedClips.size > 0 && (
-         <div className="fixed bottom-8 right-8 z-40">
-            <button 
-               onClick={downloadSelected}
-               className="btn-primary px-6 py-4 rounded-full shadow-2xl flex items-center gap-3 text-lg animate-bounce-subtle"
+        {/* Submit Form */}
+        <Card bg="dark.700" mb={8}>
+          <CardBody>
+            <form onSubmit={submitJob}>
+              <VStack spacing={4}>
+                <Flex gap={4} w="100%" direction={{ base: 'column', md: 'row' }}>
+                  <Input
+                    placeholder="Paste YouTube URL here..."
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    disabled={loading}
+                    size="lg"
+                    flex={1}
+                  />
+                  <Select
+                    value={selectedStyle}
+                    onChange={(e) => setSelectedStyle(e.target.value)}
+                    disabled={loading}
+                    size="lg"
+                    w={{ base: '100%', md: '200px' }}
+                  >
+                    {captionStyles.map(style => (
+                      <option key={style.id} value={style.id}>{style.name}</option>
+                    ))}
+                  </Select>
+                  <Button
+                    type="submit"
+                    isLoading={loading}
+                    loadingText="Submitting"
+                    variant="primary"
+                    size="lg"
+                    px={8}
+                    isDisabled={!url.trim()}
+                  >
+                    Create Clip
+                  </Button>
+                </Flex>
+
+                <Checkbox
+                  isChecked={useAi}
+                  onChange={(e) => setUseAi(e.target.checked)}
+                  isDisabled={!aiAvailable || loading}
+                  colorScheme="purple"
+                >
+                  <HStack spacing={2}>
+                    <Text>Use AI Detection</Text>
+                    {!aiAvailable && (
+                      <Text fontSize="xs" color="gray.500">(Add API key in .env)</Text>
+                    )}
+                  </HStack>
+                </Checkbox>
+
+                <Text fontSize="sm" color="gray.500">
+                  {useAi && aiAvailable ? 'AI-powered detection (Gemini/OpenAI)' : 'Rule-based detection (free)'}
+                  {' '} • Caption: {captionStyles.find(s => s.id === selectedStyle)?.name || 'Default'}
+                </Text>
+              </VStack>
+            </form>
+          </CardBody>
+        </Card>
+
+        {/* Batch Download Button */}
+        {selectedClips.size > 0 && (
+          <Box position="fixed" bottom={8} right={8} zIndex={40}>
+            <Button
+              onClick={downloadSelected}
+              variant="primary"
+              size="lg"
+              leftIcon={<Text>⬇️</Text>}
+              boxShadow="2xl"
             >
-               <span>⬇️</span>
-               <span>Download ({selectedClips.size})</span>
-            </button>
-         </div>
-      )}
-
-      {/* Submit Form */}
-      <div className="card p-8 mb-12 hover:shadow-2xl hover:shadow-accent/10">
-        <form onSubmit={submitJob} className="space-y-6">
-          <div className="flex gap-4 flex-col sm:flex-row">
-            <input
-              type="text"
-              placeholder="Paste YouTube URL here..."
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              disabled={loading}
-              className="flex-1 bg-dark-800 border-2 border-gray-700 rounded-xl px-6 py-4 text-lg focus:border-accent focus:outline-none transition-all"
-            />
-            <select
-              value={selectedStyle}
-              onChange={(e) => setSelectedStyle(e.target.value)}
-              disabled={loading}
-              className="bg-dark-800 border-2 border-gray-700 rounded-xl px-6 py-4 focus:border-accent focus:outline-none transition-colors min-w-[200px]"
-            >
-              {captionStyles.map(style => (
-                <option key={style.id} value={style.id}>{style.name}</option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              disabled={loading || !url.trim()}
-              className="btn-primary whitespace-nowrap px-8 py-4 text-lg"
-            >
-              {loading ? 'Submitting...' : 'Create Clip'}
-            </button>
-          </div>
-
-          <div className="flex items-center justify-center">
-            <label className="flex items-center gap-3 cursor-pointer px-4 py-2 rounded-lg hover:bg-dark-800 transition-colors">
-              <input
-                type="checkbox"
-                checked={useAi}
-                onChange={(e) => setUseAi(e.target.checked)}
-                disabled={!aiAvailable || loading}
-                className="w-5 h-5 accent-accent"
-              />
-              <span className="text-gray-300 font-medium">🤖 Use AI Detection</span>
-              {!aiAvailable && (
-                <span className="text-xs text-gray-500">(Add API key in .env)</span>
-              )}
-            </label>
-          </div>
-
-          <p className="text-center text-sm text-gray-500">
-            {useAi && aiAvailable ? '🤖 AI-powered detection (Gemini/OpenAI)' : '📊 Rule-based detection (free)'} • 🎨 Caption: {captionStyles.find(s => s.id === selectedStyle)?.name || 'Default'}
-          </p>
-        </form>
-      </div>
-
-      {/* Jobs Section */}
-      <section>
-        <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
-          <h2 className="text-3xl font-bold">Your Clips</h2>
-          {jobs.length > 0 && (
-            <FilterControls
-              filterStatus={filterStatus}
-              setFilterStatus={setFilterStatus}
-              sortBy={sortBy}
-              setSortBy={setSortBy}
-            />
-          )}
-        </div>
-
-        {jobs.length === 0 ? (
-          <div className="card p-16 text-center">
-            <p className="text-xl text-gray-500">
-              No clips yet. Paste a YouTube URL above to get started!
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {filteredAndSortedJobs.map(job => (
-              <div key={job.id} className="card p-6">
-                <div className="flex items-start gap-6 flex-col lg:flex-row">
-                  {/* Job Info */}
-                  <div className="flex-1 space-y-3">
-                    <div className="text-sm text-gray-500 truncate">{job.url}</div>
-
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm ${
-                        job.status === 'completed' ? 'bg-green-500/20 text-green-400' :
-                        job.status === 'failed' ? 'bg-red-500/20 text-red-400' :
-                        'bg-yellow-500/20 text-yellow-400'
-                      }`}>
-                        {['downloading', 'transcribing', 'processing'].includes(job.status) && (
-                          <span className="animate-spin">⚙️</span>
-                        )}
-                        {getStatusLabel(job.status)}
-                        {job.eta_seconds && (
-                          <span className="text-xs opacity-75">• {formatETA(job.eta_seconds)}</span>
-                        )}
-                      </span>
-                    </div>
-
-                    {job.status !== 'completed' && job.status !== 'failed' && (
-                      <div className="w-full bg-dark-800 rounded-full h-2 overflow-hidden">
-                        <div
-                          className="bg-gradient-to-r from-accent to-pink-500 h-full transition-all duration-500 shadow-lg shadow-accent/50"
-                          style={{ width: `${job.progress}%` }}
-                        />
-                      </div>
-                    )}
-
-                    {/* Logs */}
-                    <button
-                      onClick={() => setExpandedJob(expandedJob === job.id ? null : job.id)}
-                      className="text-sm text-gray-500 hover:text-accent transition-colors"
-                    >
-                      {expandedJob === job.id ? '▼ Hide Logs' : '▶ Show Logs'}
-                    </button>
-
-                    {expandedJob === job.id && (
-                      <div className="bg-dark-900 border border-gray-800 rounded-xl p-4 max-h-48 overflow-y-auto font-mono text-xs text-gray-400 space-y-1">
-                        {logs.length === 0 ? (
-                          <div>Waiting for logs...</div>
-                        ) : (
-                          logs.map((line, i) => <div key={i}>{line}</div>)
-                        )}
-                      </div>
-                    )}
-
-                    {job.error && (
-                      <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">
-                        {job.error}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Clips Grid or Delete Button */}
-                  <div className="flex gap-4 items-start">
-                    {job.status === 'completed' && job.clips && job.clips.length > 0 && (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                        {job.clips.map((clip, idx) => {
-                           const clipId = `${job.id}_${clip.filename}`;
-                           const isSelected = Array.from(selectedClips).some(c => c.id === clipId);
-                           
-                           return (
-                              <ClipCard
-                                key={idx}
-                                clip={{...clip, isSelected}}
-                                jobId={job.id}
-                                onPreview={(clip) => {
-                                  setPreviewVideo(clip)
-                                  setPreviewJob(job.id)
-                                }}
-                                onToggleSelect={() => toggleClipSelection(job.id, clip)}
-                              />
-                           )
-                        })}
-                      </div>
-                    )}
-
-                    <button
-                      onClick={() => deleteJob(job.id)}
-                      className="p-3 rounded-xl border-2 border-gray-700 hover:border-red-500 hover:bg-red-500 hover:scale-110 transition-all text-xl"
-                      title="Delete job"
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+              Download ({selectedClips.size})
+            </Button>
+          </Box>
         )}
-      </section>
+
+        {/* Jobs Section */}
+        <Box>
+          <Flex align="center" justify="space-between" mb={6} wrap="wrap" gap={4}>
+            <Heading size="lg">Your Clips</Heading>
+            {jobs.length > 0 && (
+              <HStack spacing={3}>
+                <Select
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
+                  size="sm"
+                  w="140px"
+                >
+                  <option value="all">All Status</option>
+                  <option value="completed">Completed</option>
+                  <option value="processing">Processing</option>
+                  <option value="failed">Failed</option>
+                </Select>
+                <Select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  size="sm"
+                  w="140px"
+                >
+                  <option value="recent">Most Recent</option>
+                  <option value="oldest">Oldest</option>
+                  <option value="completed">Completed First</option>
+                  <option value="score">Highest Score</option>
+                </Select>
+              </HStack>
+            )}
+          </Flex>
+
+          {jobs.length === 0 ? (
+            <Card bg="dark.700" p={12}>
+              <Text textAlign="center" color="gray.500" fontSize="lg">
+                No clips yet. Paste a YouTube URL above to get started!
+              </Text>
+            </Card>
+          ) : (
+            <VStack spacing={4} align="stretch">
+              {filteredAndSortedJobs.map(job => (
+                <Card key={job.id} bg="dark.700">
+                  <CardBody>
+                    <Flex gap={6} direction={{ base: 'column', lg: 'row' }}>
+                      {/* Job Info */}
+                      <VStack align="start" spacing={3} flex={1}>
+                        <Text fontSize="sm" color="gray.500" isTruncated maxW="400px">
+                          {job.url}
+                        </Text>
+
+                        <HStack spacing={3} wrap="wrap">
+                          <Badge
+                            colorScheme={getStatusColor(job.status)}
+                            px={3}
+                            py={1}
+                            borderRadius="md"
+                          >
+                            <HStack spacing={1}>
+                              {['downloading', 'transcribing', 'processing'].includes(job.status) && (
+                                <Spinner size="xs" />
+                              )}
+                              <Text>{getStatusLabel(job.status)}</Text>
+                            </HStack>
+                          </Badge>
+                          {job.eta_seconds && (
+                            <Text fontSize="xs" color="gray.500">
+                              {formatETA(job.eta_seconds)}
+                            </Text>
+                          )}
+                        </HStack>
+
+                        {job.status !== 'completed' && job.status !== 'failed' && (
+                          <Progress
+                            value={job.progress}
+                            size="sm"
+                            colorScheme="purple"
+                            borderRadius="full"
+                            w="100%"
+                            hasStripe
+                            isAnimated
+                          />
+                        )}
+
+                        {job.status === 'chapters_ready' && (
+                          <Button
+                            variant="primary"
+                            w="100%"
+                            onClick={() => {
+                              fetchChapters(job.id)
+                              setChapterSelectJob(job)
+                              onChapterOpen()
+                            }}
+                          >
+                            Select Chapters to Continue
+                          </Button>
+                        )}
+
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setExpandedJob(expandedJob === job.id ? null : job.id)}
+                        >
+                          {expandedJob === job.id ? '▼ Hide Logs' : '▶ Show Logs'}
+                        </Button>
+
+                        <Collapse in={expandedJob === job.id} animateOpacity>
+                          <Box
+                            bg="dark.900"
+                            borderRadius="md"
+                            p={3}
+                            maxH="200px"
+                            overflowY="auto"
+                            w="100%"
+                            fontSize="xs"
+                            fontFamily="mono"
+                          >
+                            {logs.length === 0 ? (
+                              <Text color="gray.500">Waiting for logs...</Text>
+                            ) : (
+                              logs.map((line, i) => (
+                                <Text key={i} color="gray.400">{line}</Text>
+                              ))
+                            )}
+                          </Box>
+                        </Collapse>
+
+                        {job.error && (
+                          <Alert status="error" borderRadius="md" size="sm">
+                            <AlertIcon />
+                            <Text fontSize="sm">{job.error}</Text>
+                          </Alert>
+                        )}
+                      </VStack>
+
+                      {/* Clips Grid */}
+                      <HStack spacing={4} align="start">
+                        {job.status === 'completed' && job.clips && job.clips.length > 0 && (
+                          <Grid
+                            templateColumns={{ base: 'repeat(2, 1fr)', md: 'repeat(3, 1fr)', lg: 'repeat(4, 1fr)' }}
+                            gap={3}
+                          >
+                            {job.clips.map((clip, idx) => {
+                              const clipId = `${job.id}_${clip.filename}`
+                              const isSelected = Array.from(selectedClips).some(c => c.id === clipId)
+                              return (
+                                <ClipCard
+                                  key={idx}
+                                  clip={clip}
+                                  jobId={job.id}
+                                  isSelected={isSelected}
+                                  onPreview={() => handlePreview(clip, job.id)}
+                                  onToggleSelect={() => toggleClipSelection(job.id, clip)}
+                                />
+                              )
+                            })}
+                          </Grid>
+                        )}
+
+                        <Tooltip label="Delete job">
+                          <IconButton
+                            icon={<Text>🗑️</Text>}
+                            variant="ghost"
+                            colorScheme="red"
+                            onClick={() => deleteJob(job.id)}
+                          />
+                        </Tooltip>
+                      </HStack>
+                    </Flex>
+                  </CardBody>
+                </Card>
+              ))}
+            </VStack>
+          )}
+        </Box>
+      </Container>
 
       {/* Video Preview Modal */}
-      {previewVideo && (
-        <VideoPreview
-          clip={previewVideo}
-          jobId={previewJob}
-          onClose={() => setPreviewVideo(null)}
+      <Modal isOpen={isPreviewOpen} onClose={onPreviewClose} size="xl" isCentered>
+        <ModalOverlay />
+        <ModalContent bg="dark.800" maxW="500px">
+          <ModalCloseButton />
+          <ModalBody p={4}>
+            {previewVideo && (
+              <VStack spacing={4}>
+                <AspectRatio ratio={9/16} w="100%">
+                  <video
+                    src={`${API_BASE}/jobs/${previewJob}/download?filename=${previewVideo.filename}`}
+                    controls
+                    autoPlay
+                    style={{ borderRadius: '12px' }}
+                  />
+                </AspectRatio>
+                <HStack w="100%" justify="space-between">
+                  <VStack align="start" spacing={0}>
+                    <Text fontWeight="bold">{previewVideo.title || 'Viral Clip'}</Text>
+                    <Text fontSize="sm" color="gray.500">~{Math.round(previewVideo.duration || 30)}s</Text>
+                  </VStack>
+                  <Button
+                    as="a"
+                    href={`${API_BASE}/jobs/${previewJob}/download?filename=${previewVideo.filename}`}
+                    download
+                    variant="primary"
+                  >
+                    Download
+                  </Button>
+                </HStack>
+              </VStack>
+            )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+
+      {/* Chapter Selection Modal */}
+      <Modal isOpen={isChapterOpen} onClose={onChapterClose} size="2xl" scrollBehavior="inside">
+        <ModalOverlay />
+        <ModalContent bg="dark.800">
+          <ModalHeader>Select Chapters to Clip</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody pb={6}>
+            <ChapterSelector
+              jobId={chapterSelectJob?.id}
+              chapters={chapters}
+              onSubmit={() => {
+                onChapterClose()
+                setChapterSelectJob(null)
+                setChapters([])
+                fetchJobs()
+              }}
+              onCancel={onChapterClose}
+            />
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+    </Box>
+  )
+}
+
+// ClipCard Component
+function ClipCard({ clip, jobId, isSelected, onPreview, onToggleSelect }) {
+  const thumbnailUrl = clip.thumbnail
+    ? `${API_BASE}/jobs/${jobId}/thumbnail/${clip.thumbnail}`
+    : null
+
+  return (
+    <Card
+      bg="dark.600"
+      overflow="hidden"
+      cursor="pointer"
+      transition="all 0.2s"
+      _hover={{ transform: 'translateY(-4px)', boxShadow: 'lg' }}
+      borderWidth={isSelected ? '2px' : '1px'}
+      borderColor={isSelected ? 'brand.500' : 'gray.700'}
+      position="relative"
+    >
+      <Box position="absolute" top={2} left={2} zIndex={2}>
+        <Checkbox
+          isChecked={isSelected}
+          onChange={onToggleSelect}
+          colorScheme="purple"
+          size="lg"
+          onClick={(e) => e.stopPropagation()}
         />
+      </Box>
+
+      <AspectRatio ratio={9/16}>
+        <Box bg="dark.500">
+          {thumbnailUrl ? (
+            <Image
+              src={thumbnailUrl}
+              alt={clip.title}
+              objectFit="cover"
+              w="100%"
+              h="100%"
+            />
+          ) : (
+            <Flex align="center" justify="center" h="100%">
+              <Text fontSize="4xl">🎬</Text>
+            </Flex>
+          )}
+        </Box>
+      </AspectRatio>
+
+      <CardBody p={3}>
+        <VStack align="start" spacing={2}>
+          <HStack justify="space-between" w="100%">
+            <Badge colorScheme="green" fontSize="xs">
+              👍 /{clip.score || 10}
+            </Badge>
+            <Text fontSize="xs" color="gray.500">
+              ~{Math.round(clip.duration || 30)}s
+            </Text>
+          </HStack>
+          <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
+            {clip.title || 'Viral Clip'}
+          </Text>
+          <HStack w="100%" spacing={2}>
+            <Button size="xs" variant="ghost" flex={1} onClick={onPreview}>
+              👁️ Preview
+            </Button>
+            <Button
+              as="a"
+              href={`${API_BASE}/jobs/${jobId}/download?filename=${clip.filename}`}
+              download
+              size="xs"
+              variant="primary"
+              flex={1}
+            >
+              ⬇️ Download
+            </Button>
+          </HStack>
+        </VStack>
+      </CardBody>
+    </Card>
+  )
+}
+
+// ChapterSelector Component
+function ChapterSelector({ jobId, chapters, onSubmit, onCancel }) {
+  const [selected, setSelected] = useState(new Set())
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const toggleChapter = (chapterId) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(chapterId)) {
+        next.delete(chapterId)
+      } else {
+        next.add(chapterId)
+      }
+      return next
+    })
+  }
+
+  const selectAll = () => setSelected(new Set(chapters.map(ch => ch.id)))
+  const selectNone = () => setSelected(new Set())
+
+  const handleSubmit = async () => {
+    if (selected.size === 0) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API_BASE}/jobs/${jobId}/select-chapters`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chapter_ids: Array.from(selected) })
+      })
+      if (res.ok) {
+        onSubmit()
+      } else {
+        const data = await res.json()
+        setError(data.detail || 'Failed to submit chapters')
+      }
+    } catch (err) {
+      setError('Network error. Please try again.')
+    }
+    setLoading(false)
+  }
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    if (mins > 0) return `${mins}m ${secs}s`
+    return `${secs}s`
+  }
+
+  const totalDuration = chapters
+    .filter(ch => selected.has(ch.id))
+    .reduce((sum, ch) => sum + ch.duration, 0)
+
+  return (
+    <VStack spacing={4} align="stretch">
+      <HStack justify="space-between">
+        <Text color="gray.400" fontSize="sm">
+          Choose which chapters to convert into video clips
+        </Text>
+        <HStack>
+          <Button size="sm" variant="ghost" onClick={selectAll}>Select All</Button>
+          <Button size="sm" variant="ghost" onClick={selectNone}>Clear</Button>
+        </HStack>
+      </HStack>
+
+      {selected.size > 0 && (
+        <Alert status="info" borderRadius="md" bg="brand.900" border="1px" borderColor="brand.700">
+          <HStack justify="space-between" w="100%">
+            <Text color="brand.300">
+              {selected.size} chapter{selected.size !== 1 ? 's' : ''} selected
+            </Text>
+            <Text color="gray.400" fontSize="sm">
+              Total duration: {formatDuration(totalDuration)}
+            </Text>
+          </HStack>
+        </Alert>
       )}
-    </div>
+
+      {error && (
+        <Alert status="error" borderRadius="md">
+          <AlertIcon />
+          {error}
+        </Alert>
+      )}
+
+      <VStack spacing={2} align="stretch" maxH="400px" overflowY="auto">
+        {chapters.map((chapter, index) => (
+          <Card
+            key={chapter.id}
+            bg={selected.has(chapter.id) ? 'brand.900' : 'dark.600'}
+            borderWidth="2px"
+            borderColor={selected.has(chapter.id) ? 'brand.500' : 'transparent'}
+            cursor="pointer"
+            onClick={() => toggleChapter(chapter.id)}
+            transition="all 0.2s"
+            _hover={{ borderColor: 'brand.400' }}
+          >
+            <CardBody py={3} px={4}>
+              <HStack spacing={4}>
+                <Checkbox
+                  isChecked={selected.has(chapter.id)}
+                  onChange={() => toggleChapter(chapter.id)}
+                  colorScheme="purple"
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <VStack align="start" spacing={1} flex={1}>
+                  <HStack>
+                    <Badge size="sm" colorScheme="gray">#{index + 1}</Badge>
+                    <Text fontWeight="semibold" noOfLines={1}>{chapter.title}</Text>
+                  </HStack>
+                  <HStack fontSize="sm" color="gray.400">
+                    <Text>{formatTime(chapter.start)} - {formatTime(chapter.end)}</Text>
+                    <Text color="brand.400">{formatDuration(chapter.duration)}</Text>
+                  </HStack>
+                  {chapter.summary && (
+                    <Text fontSize="sm" color="gray.500" noOfLines={2}>{chapter.summary}</Text>
+                  )}
+                </VStack>
+                {chapter.confidence && (
+                  <Badge
+                    colorScheme={chapter.confidence >= 0.8 ? 'green' : chapter.confidence >= 0.5 ? 'yellow' : 'gray'}
+                  >
+                    {Math.round(chapter.confidence * 100)}%
+                  </Badge>
+                )}
+              </HStack>
+            </CardBody>
+          </Card>
+        ))}
+      </VStack>
+
+      <HStack spacing={4} pt={2}>
+        <Button flex={1} variant="ghost" onClick={onCancel} isDisabled={loading}>
+          Cancel
+        </Button>
+        <Button
+          flex={1}
+          variant="primary"
+          onClick={handleSubmit}
+          isDisabled={selected.size === 0}
+          isLoading={loading}
+          loadingText="Processing..."
+        >
+          Create {selected.size} Clip{selected.size !== 1 ? 's' : ''}
+        </Button>
+      </HStack>
+    </VStack>
   )
 }
 
