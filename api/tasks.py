@@ -54,6 +54,11 @@ CAPTION_STYLES = {
     "podcast": {
         "name": "Podcast",
         "style": "FontName=Georgia,FontSize=13,PrimaryColour=&HFFFFFF,OutlineColour=&H333333,Outline=2,Shadow=1,Alignment=2,MarginV=45"
+    },
+    "capcut": {
+        "name": "CapCut (Dynamic)",
+        "style": "FontName=Arial,FontSize=20,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=3,Shadow=0,Bold=1,Alignment=2,MarginV=60",
+        "dynamic": True
     }
 }
 
@@ -447,6 +452,24 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         # Step 4: Create clip with FFmpeg
         self.update_state(state="PROCESSING", meta={"progress": 70})
         
+        # Get caption style
+        style_name = options.get("caption_style", "default")
+        style = CAPTION_STYLES.get(style_name, CAPTION_STYLES["default"])
+        log_progress(job_dir, f"🎨 Using caption style: {style['name']}")
+        
+        # Apply dynamic splitting if needed (e.g. for CapCut style)
+        if style.get("dynamic"):
+            log_progress(job_dir, "⚡ Applying dynamic segment splitting for CapCut style...")
+            segments = split_segments_for_style(segments, style)
+            
+            # Re-write SRT with new segments for FFmpeg usage
+            with open(srt_file, "w", encoding="utf-8") as f:
+                for i, seg in enumerate(segments, 1):
+                    start = format_timestamp(seg["start"])
+                    end = format_timestamp(seg["end"])
+                    text = seg["text"].strip()
+                    f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+        
         log_progress(job_dir, f"✂️ Creating clip: {int(clip_start)}s to {int(clip_start + clip_duration)}s")
         
         # Create adjusted SRT for the clip
@@ -504,6 +527,7 @@ def process_video(self, job_id: str, url: str, options: dict = None):
         raise
 
 
+
 def format_timestamp(seconds: float) -> str:
     """Convert seconds to SRT timestamp format (HH:MM:SS,mmm)"""
     hours = int(seconds // 3600)
@@ -511,3 +535,47 @@ def format_timestamp(seconds: float) -> str:
     secs = int(seconds % 60)
     millis = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def split_segments_for_style(segments: list, style: dict) -> list:
+    """
+    Split segments into shorter chunks for dynamic/CapCut style.
+    Aim for 3-5 words per chunk or max 20-30 characters.
+    """
+    # Only split if style is dynamic
+    if not style.get("dynamic"):
+        return segments
+        
+    new_segments = []
+    
+    for seg in segments:
+        text = seg["text"].strip()
+        words = text.split()
+        
+        # If segment is already short, keep it
+        if len(words) <= 4 and len(text) < 30:
+            new_segments.append(seg)
+            continue
+            
+        # Calculate duration per word
+        duration = seg["end"] - seg["start"]
+        word_duration = duration / len(words) if words else 0
+        
+        # Split into chunks of 3-4 words
+        chunk_size = 4
+        current_time = seg["start"]
+        
+        for i in range(0, len(words), chunk_size):
+            chunk_words = words[i:i + chunk_size]
+            chunk_text = " ".join(chunk_words)
+            chunk_duration = len(chunk_words) * word_duration
+            
+            new_segments.append({
+                "start": current_time,
+                "end": current_time + chunk_duration,
+                "text": chunk_text
+            })
+            
+            current_time += chunk_duration
+            
+    return new_segments
