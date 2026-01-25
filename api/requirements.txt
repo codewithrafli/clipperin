@@ -7,6 +7,7 @@ openai-whisper==20231117
 python-multipart==0.0.6
 pydantic==2.5.3
 pydantic-settings==2.1.0
+opencv-python-headless>=4.8.0
 
 # Optional AI APIs for enhanced smart clip detection
 # New Gemini package (recommended)

@@ -3,7 +3,15 @@ import subprocess
 import re
 from datetime import datetime
 from celery import Celery
-from config import settings
+
+# Handle both package import (from .config) and standalone import (from config)
+try:
+    from .config import settings
+except ImportError:
+    from config import settings
+
+import cv2
+import tempfile
 
 # Initialize Celery
 celery_app = Celery(
@@ -852,35 +860,105 @@ Generated from video chapter: {int(chapter['start'])}s - {int(chapter['end'])}s
 # MULTI-OUTPUT FORMAT FUNCTIONS (New Feature)
 # =============================================================================
 
-def get_crop_filter(width: int, height: int) -> str:
+def get_crop_filter(width: int, height: int, face_count: int = None, last_layout: str = "single") -> tuple:
     """
-    Generate FFmpeg filter complex for vertical (9:16) output.
-    Landscape videos get split-screen: top=full view, bottom=zoomed face.
-    Portrait videos get center cropped.
+    Face-aware layout decision.
+    Returns: (filter_string, layout_used)
     """
-    target_w = settings.output_width  # 1080
+
+    target_w = settings.output_width   # 1080
     target_h = settings.output_height  # 1920
-    half_h = target_h // 2  # 960
+    half_h = target_h // 2
 
-    input_ar = width / height
-    target_ar = target_w / target_h
+    # --- FACE-BASED DECISION ---
+    if face_count is not None:
+        if face_count >= 2:
+            layout = "split"
+        elif face_count == 1:
+            layout = "single"
+        else:
+            layout = last_layout  # fallback kalau kosong
+    else:
+        # fallback lama (aspect ratio)
+        input_ar = width / height
+        target_ar = target_w / target_h
+        layout = "split" if input_ar > target_ar else "single"
 
-    if input_ar > target_ar:  # Landscape input -> split screen
-        # Split screen layout:
-        # Top half: Full video scaled to fit width
-        # Bottom half: Zoomed crop (center focus)
+    # --- BUILD FILTER ---
+    if layout == "split":
         return (
             f"split[top][bottom];"
             f"[top]scale={target_w}:-2,pad={target_w}:{half_h}:0:(oh-ih)/2:black[top_out];"
             f"[bottom]scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
             f"crop={target_w}:{half_h}[bottom_out];"
-            f"[top_out][bottom_out]vstack"
+            f"[top_out][bottom_out]vstack",
+            "split"
         )
-    else:  # Portrait / Square input -> center crop
-        return (
-            f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
-            f"crop={target_w}:{target_h}"
+
+    # SINGLE FACE
+    return (
+        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{target_h}",
+        "single"
+    )
+
+    
+# =============================================================================
+# FACE DETECTION (FREE, CPU-ONLY)
+# =============================================================================
+
+FACE_CASCADE = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+
+def detect_face_count(video_path: str, timestamp: float) -> int:
+    """
+    Detect number of faces at a specific timestamp.
+    Return: 0, 1, or 2 (2 = 2 or more)
+    """
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        frame_path = tmp.name
+
+    try:
+        # Extract frame
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-ss", str(timestamp),
+                "-i", video_path,
+                "-vframes", "1",
+                "-q:v", "2",
+                frame_path
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10
         )
+
+        img = cv2.imread(frame_path)
+        if img is None:
+            return 0
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = FACE_CASCADE.detectMultiScale(
+            gray,
+            scaleFactor=1.2,
+            minNeighbors=5,
+            minSize=(80, 80)
+        )
+
+        if len(faces) >= 2:
+            return 2
+        elif len(faces) == 1:
+            return 1
+        return 0
+
+    except Exception:
+        return 0
+    finally:
+        if os.path.exists(frame_path):
+            os.remove(frame_path)
+
 
 def generate_clip_raw(
     input_file: str,
@@ -945,7 +1023,17 @@ def generate_clip_with_subtitles(
         print(f"DEBUG: Could not probe dimensions: {e}, using fallback", flush=True)
         w, h = 1920, 1080 # Fallback
 
-    crop_filter = get_crop_filter(w, h)
+    # ---- FACE AWARE ----
+    face_count = detect_face_count(input_file, start + duration / 2)
+
+    crop_filter, used_layout = get_crop_filter(
+        w,
+        h,
+        face_count=face_count,
+        last_layout=options.get("last_layout", "single")
+    )
+
+    options["last_layout"] = used_layout
 
     # Combine crop filter with subtitles
     base_filter = crop_filter + "[v_cropped]"
