@@ -71,5 +71,64 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
 
+    def load_dynamic_settings(self):
+        """Load settings from data/settings.json"""
+        import json
+        
+        settings_path = os.path.join(self.data_dir, "settings.json")
+        if not os.path.exists(settings_path):
+            return
+
+        try:
+            with open(settings_path, "r") as f:
+                data = json.load(f)
+            
+            # Update fields if they exist in data
+            for key, value in data.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+            print(f"✅ Loaded dynamic settings from {settings_path}")
+        except Exception as e:
+            print(f"❌ Failed to load settings: {e}")
+
+    def save_dynamic_settings(self, new_settings: dict):
+        """Save settings to data/settings.json and update instance"""
+        import json
+        
+        # Update instance first
+        for key, value in new_settings.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+        
+        # Save to disk
+        settings_path = os.path.join(self.data_dir, "settings.json")
+        
+        # We only save fields that are safe to persist dynamically
+        # (Exclude API keys if we don't want them in cleartext JSON, but user asked for runtime updates)
+        # For this local app, saving everything relevant is fine.
+        
+        # Re-construct export data from current state (or just the new_settings? Better to save full state of dynamic fields)
+        # But to be safe, let's just save what was passed + existing dynamic values if we track them.
+        # Simpler: Read existing JSON, update with new, write back.
+        
+        current_data = {}
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r") as f:
+                    current_data = json.load(f)
+            except:
+                pass
+        
+        current_data.update(new_settings)
+        
+        try:
+            with open(settings_path, "w") as f:
+                json.dump(current_data, f, indent=2)
+            print(f"✅ Saved settings to {settings_path}")
+        except Exception as e:
+            print(f"❌ Failed to save settings: {e}")
+
 
 settings = Settings()
+# Try loading dynamic settings on startup
+settings.load_dynamic_settings()

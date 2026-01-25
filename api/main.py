@@ -136,6 +136,18 @@ class ChapterSelection(BaseModel):
     options: Optional[dict] = {}
 
 
+class SettingsUpdate(BaseModel):
+    ai_provider: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    enable_auto_hook: Optional[bool] = None
+    enable_smart_reframe: Optional[bool] = None
+    enable_two_phase_flow: Optional[bool] = None
+    # Add other fields as needed
+
+
+
 class JobResponse(BaseModel):
     id: str
     url: str
@@ -430,6 +442,9 @@ def select_chapters(job_id: str, selection: ChapterSelection):
 @app.get("/api/settings")
 def get_settings():
     """Get current system settings (public subset)"""
+    # Reload to be sure
+    settings.load_dynamic_settings()
+    
     return {
         "enable_two_phase_flow": settings.enable_two_phase_flow,
         "enable_translation": settings.enable_translation,
@@ -450,6 +465,22 @@ def get_settings():
         "enable_smart_reframe": settings.enable_smart_reframe,
         "reframe_smoothing": settings.reframe_smoothing,
     }
+
+
+@app.post("/api/settings")
+def update_settings(update: SettingsUpdate):
+    """Update settings at runtime"""
+    # Filter out None values to only update what's sent
+    new_settings = {k: v for k, v in update.dict().items() if v is not None}
+    
+    if not new_settings:
+        return {"message": "No changes provided"}
+    
+    # Update and save
+    settings.save_dynamic_settings(new_settings)
+    
+    return {"message": "Settings updated", "updated": new_settings}
+
 
 
 @app.get("/api/ai-providers")

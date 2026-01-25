@@ -82,6 +82,14 @@ function App() {
   const [enableSmartReframe, setEnableSmartReframe] = useState(false)
   const [totalCost, setTotalCost] = useState(0)
 
+  // API Key State
+  const [apiKeys, setApiKeys] = useState({
+    gemini: '',
+    groq: '',
+    openai: ''
+  })
+  const [isSaving, setIsSaving] = useState(false)
+
   const { isOpen: isDetailOpen, onOpen: onDetailOpen, onClose: onDetailClose } = useDisclosure()
   const { isOpen: isChapterOpen, onOpen: onChapterOpen, onClose: onChapterClose } = useDisclosure()
   const { isOpen: isPreviewOpen, onOpen: onPreviewOpen, onClose: onPreviewClose } = useDisclosure()
@@ -253,6 +261,41 @@ function App() {
       console.error('Failed to delete job:', err)
     }
   }, [selectedJob, fetchJobs, onDetailClose])
+
+  const saveSettings = async () => {
+    setIsSaving(true)
+    try {
+      const payload = {
+        ai_provider: currentProvider,
+        enable_auto_hook: enableAutoHook,
+        enable_smart_reframe: enableSmartReframe,
+      }
+
+      // Only send keys if they are entered
+      if (apiKeys.gemini) payload.gemini_api_key = apiKeys.gemini
+      if (apiKeys.groq) payload.groq_api_key = apiKeys.groq
+      if (apiKeys.openai) payload.openai_api_key = apiKeys.openai
+
+      const res = await fetch(`${API_BASE}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+
+      if (res.ok) {
+        // Refresh providers to show updated "Ready" status
+        fetchAiProviders()
+        onSettingsClose()
+        // Clear keys for security (optional, but good practice)
+        setApiKeys({ gemini: '', groq: '', openai: '' })
+      } else {
+        console.error('Failed to save settings')
+      }
+    } catch (err) {
+      console.error('Error saving settings:', err)
+    }
+    setIsSaving(false)
+  }
 
   const getStatusColor = (status) => {
     const colors = {
@@ -524,6 +567,36 @@ function App() {
                     </Card>
                   ))}
                 </SimpleGrid>
+
+                {/* API Key Input */}
+                {currentProvider !== 'none' && (
+                  <Box mt={4} p={4} bg="dark.700" borderRadius="md" borderWidth="1px" borderColor="gray.600">
+                    <FormControl>
+                      <FormLabel mb={1} fontSize="sm" color="gray.300">
+                        API Key for {aiProviders.find(p => p.id === currentProvider)?.name}
+                      </FormLabel>
+                      <Input
+                        type="password"
+                        placeholder="Enter API Key to update..."
+                        value={apiKeys[currentProvider] || ''}
+                        onChange={(e) => setApiKeys({ ...apiKeys, [currentProvider]: e.target.value })}
+                        bg="dark.800"
+                        borderColor="gray.600"
+                        _hover={{ borderColor: 'gray.500' }}
+                        _focus={{ borderColor: 'brand.400', boxShadow: 'none' }}
+                      />
+                      {aiProviders.find(p => p.id === currentProvider)?.configured ? (
+                        <Text fontSize="xs" color="green.400" mt={1}>
+                          ✓ Currently configured (leave blank to keep existing)
+                        </Text>
+                      ) : (
+                        <Text fontSize="xs" color="yellow.400" mt={1}>
+                          ⚠ Key required for this provider
+                        </Text>
+                      )}
+                    </FormControl>
+                  </Box>
+                )}
               </Box>
 
               <Divider />
@@ -647,7 +720,7 @@ function App() {
             </VStack>
           </ModalBody>
           <ModalFooter>
-            <Button variant="primary" onClick={onSettingsClose}>
+            <Button variant="primary" onClick={saveSettings} isLoading={isSaving} loadingText="Saving...">
               Save Settings
             </Button>
           </ModalFooter>

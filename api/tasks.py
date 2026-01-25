@@ -20,6 +20,9 @@ import numpy as np
 
 def get_ai_client():
     """Get the configured AI client based on settings"""
+    # Reload settings in worker process
+    settings.load_dynamic_settings()
+    
     provider = settings.ai_provider.lower()
 
     if provider == "groq" and settings.groq_api_key:
@@ -756,48 +759,56 @@ Return as JSON array (ONLY the array, no other text):
 
     chapters = []
 
-    # Try Gemini first
-    if settings.gemini_api_key:
-        try:
-            try:
-                from google import genai
-                client = genai.Client(api_key=settings.gemini_api_key)
-                response = client.models.generate_content(
-                    model='gemini-2.0-flash-exp',
-                    contents=prompt
-                )
-                chapters = parse_chapter_response(response.text, video_duration)
-                if chapters:
-                    return chapters
-            except ImportError:
-                import google.generativeai as genai
-                genai.configure(api_key=settings.gemini_api_key)
-                model = genai.GenerativeModel('gemini-pro')
-                response = model.generate_content(prompt)
-                chapters = parse_chapter_response(response.text, video_duration)
-                if chapters:
-                    return chapters
-        except Exception as e:
-            print(f"Gemini chapter analysis error: {e}")
+    # Use configured AI provider via get_ai_client()
+    provider, client = get_ai_client()
 
-    # Try OpenAI
-    if settings.openai_api_key:
-        try:
-            import openai
-            client = openai.OpenAI(api_key=settings.openai_api_key)
+    try:
+        if provider == "groq" and client:
+            # Groq (Llama 3.3)
             response = client.chat.completions.create(
-                model="gpt-4-turbo-preview",
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000,
+                temperature=0.3
+            )
+            chapters = parse_chapter_response(response.choices[0].message.content, video_duration)
+            if chapters:
+                print(f"✅ Groq chapter analysis: Found {len(chapters)} chapters")
+                return chapters
+
+        elif provider == "gemini" and client:
+            # Gemini
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt
+            )
+            chapters = parse_chapter_response(response.text, video_duration)
+            if chapters:
+                print(f"✅ Gemini chapter analysis: Found {len(chapters)} chapters")
+                return chapters
+
+        elif provider == "gemini_old" and client:
+            # Legacy Gemini
+            model = client.GenerativeModel('gemini-pro')
+            response = model.generate_content(prompt)
+            chapters = parse_chapter_response(response.text, video_duration)
+            if chapters:
+                return chapters
+
+        elif provider == "openai" and client:
+            # OpenAI
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=2000
             )
-            chapters = parse_chapter_response(
-                response.choices[0].message.content,
-                video_duration
-            )
+            chapters = parse_chapter_response(response.choices[0].message.content, video_duration)
             if chapters:
+                print(f"✅ OpenAI chapter analysis: Found {len(chapters)} chapters")
                 return chapters
-        except Exception as e:
-            print(f"OpenAI chapter analysis error: {e}")
+
+    except Exception as e:
+        print(f"WARNING: {provider} chapter analysis error: {e}")
 
     return chapters
 
@@ -1320,23 +1331,32 @@ def detect_face_count(video_path: str, timestamp: float) -> int:
 
         img = cv2.imread(frame_path)
         if img is None:
+            print(f"DEBUG: Face detection - could not read frame at {timestamp}s", flush=True)
             return 0
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # More sensitive face detection for podcast/interview scenarios
+        # Use smaller minSize to detect faces that are farther away
         faces = FACE_CASCADE.detectMultiScale(
             gray,
-            scaleFactor=1.2,
-            minNeighbors=5,
-            minSize=(80, 80)
+            scaleFactor=1.1,   # More granular scaling (was 1.2)
+            minNeighbors=4,    # Slightly lower threshold (was 5)
+            minSize=(50, 50),  # Smaller min face size (was 80x80)
+            flags=cv2.CASCADE_SCALE_IMAGE
         )
 
-        if len(faces) >= 2:
+        face_count = len(faces)
+        print(f"DEBUG: Face detection at {timestamp:.1f}s - found {face_count} face(s)", flush=True)
+
+        if face_count >= 2:
             return 2
-        elif len(faces) == 1:
+        elif face_count == 1:
             return 1
         return 0
 
-    except Exception:
+    except Exception as e:
+        print(f"DEBUG: Face detection error: {e}", flush=True)
         return 0
     finally:
         if os.path.exists(frame_path):
@@ -1409,7 +1429,15 @@ def generate_clip_with_subtitles(
         w, h = 1920, 1080 # Fallback
 
     # ---- FACE AWARE ----
-    face_count = detect_face_count(input_file, start + duration / 2)
+    # Sample multiple timestamps for better face detection
+    sample_times = [
+        start + duration * 0.25,
+        start + duration * 0.5,
+        start + duration * 0.75
+    ]
+    face_counts = [detect_face_count(input_file, t) for t in sample_times]
+    face_count = max(face_counts)  # Use highest detected count
+    print(f"DEBUG: Face detection samples: {face_counts}, using max: {face_count}", flush=True)
 
     crop_filter, used_layout = get_crop_filter(
         w,
@@ -1417,6 +1445,7 @@ def generate_clip_with_subtitles(
         face_count=face_count,
         last_layout=options.get("last_layout", "single")
     )
+    print(f"DEBUG: Layout selected: {used_layout} (face_count={face_count})", flush=True)
 
     options["last_layout"] = used_layout
 
@@ -1588,13 +1617,77 @@ def process_single_chapter(
         temp_srt,
         chapter["start"],
         chapter["duration"],
-        style
+        style,
+        options
     )
     log_progress(job_dir, f"  ✅ Subtitled clip complete")
 
     # Clean up temp SRT
     if os.path.exists(temp_srt):
         os.remove(temp_srt)
+
+    # ===============================
+    # POST-PROCESSING: Smart Reframe
+    # ===============================
+    if options.get("enable_smart_reframe", settings.enable_smart_reframe):
+        log_progress(job_dir, f"  🎯 Applying Smart Reframe (face tracking)...")
+        try:
+            reframe_input = outputs["clip_subtitled"]
+            reframe_output = os.path.join(job_dir, f"{chapter_id}_reframed.mp4")
+
+            success = smart_reframe_video(
+                reframe_input,
+                reframe_output,
+                smoothing=options.get("reframe_smoothing", settings.reframe_smoothing)
+            )
+
+            if success and os.path.exists(reframe_output):
+                # Replace original with reframed version
+                os.replace(reframe_output, outputs["clip_subtitled"])
+                log_progress(job_dir, f"  ✅ Smart Reframe applied!")
+            else:
+                log_progress(job_dir, f"  ⚠️ Smart Reframe skipped (no face detected or error)")
+        except Exception as e:
+            log_progress(job_dir, f"  ⚠️ Smart Reframe error: {e}")
+
+    # ===============================
+    # POST-PROCESSING: Auto Hook
+    # ===============================
+    if options.get("enable_auto_hook", settings.enable_auto_hook):
+        log_progress(job_dir, f"  🎣 Generating Auto Hook text...")
+        try:
+            # Get transcript text for this chapter
+            transcript_text = " ".join([seg["text"] for seg in chapter_segments])
+
+            # Generate hook using AI or rule-based
+            hook_text = generate_hook_text_ai(transcript_text)
+            if not hook_text:
+                hook_text = generate_hook_text_rules(transcript_text)
+
+            if hook_text:
+                log_progress(job_dir, f"  📝 Hook: \"{hook_text}\"")
+
+                hook_input = outputs["clip_subtitled"]
+                hook_output = os.path.join(job_dir, f"{chapter_id}_hooked.mp4")
+
+                success = add_hook_overlay(
+                    hook_input,
+                    hook_output,
+                    hook_text,
+                    duration=options.get("hook_duration", settings.hook_duration),
+                    style=options.get("hook_style", settings.hook_style)
+                )
+
+                if success and os.path.exists(hook_output):
+                    # Replace original with hooked version
+                    os.replace(hook_output, outputs["clip_subtitled"])
+                    log_progress(job_dir, f"  ✅ Auto Hook applied!")
+                else:
+                    log_progress(job_dir, f"  ⚠️ Auto Hook overlay failed")
+            else:
+                log_progress(job_dir, f"  ⚠️ Could not generate hook text")
+        except Exception as e:
+            log_progress(job_dir, f"  ⚠️ Auto Hook error: {e}")
 
     # 5. Generate thumbnail
     log_progress(job_dir, f"  🖼️ Generating thumbnail...")
