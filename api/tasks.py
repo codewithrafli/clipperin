@@ -981,7 +981,7 @@ def generate_clip_raw(
     except:
         w, h = 1920, 1080 # Fallback
     
-    filter_str = get_crop_filter(w, h)
+    filter_str, _ = get_crop_filter(w, h)
 
     ffmpeg_cmd = [
         "ffmpeg", "-y",
@@ -1005,9 +1005,11 @@ def generate_clip_with_subtitles(
     srt_file: str,
     start: float,
     duration: float,
-    style: dict
+    style: dict,
+    options: dict = None
 ):
     """Generate clip with burned-in subtitles"""
+    options = options or {}
     print(f"DEBUG: generate_clip_with_subtitles - start={start}, duration={duration}", flush=True)
 
     # Escape special characters in path for FFmpeg
@@ -1623,8 +1625,8 @@ def process_video(self, job_id: str, url: str, options: dict = None):
 
             # Probe clip dimensions (or use global if passed)
             w, h = options.get("video_width", 1920), options.get("video_height", 1080)
-            
-            crop_filter = get_crop_filter(w, h)
+
+            crop_filter, _ = get_crop_filter(w, h)
             base_filter = crop_filter + "[v_cropped]"
             
             final_filter = (
