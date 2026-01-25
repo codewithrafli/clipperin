@@ -151,54 +151,58 @@ def generate_hook_text_rules(transcript_text: str, max_words: int = 8) -> str:
 
 def add_hook_overlay(input_video: str, output_video: str, hook_text: str,
                      duration: int = 5, style: str = "bold") -> bool:
-    """Add animated hook text overlay to video using FFmpeg"""
+    """Add animated hook text overlay with white background box"""
 
     # Escape special characters for FFmpeg
-    # 1. Escape backslashes first (so we don't double escape later additions)
     escaped_text = hook_text.replace("\\", "\\\\")
-    # 2. Escape colons (filter separator)
     escaped_text = escaped_text.replace(":", "\\:")
-    # 3. Escape single quotes (we are inside text='...')
     escaped_text = escaped_text.replace("'", "'\\''")
 
-    # Style configurations
+    # Style configurations - now with background box
     styles = {
         "bold": {
-            "fontsize": 60,
-            "fontcolor": "white",
-            "borderw": 4,
-            "bordercolor": "black",
-            "y_pos": "h*0.12"
+            "fontsize": 48,
+            "fontcolor": "black",
+            "box_color": "white",
+            "box_opacity": 0.95,
+            "y_pos": 80,  # Fixed position from top
+            "padding": 20
         },
         "minimal": {
-            "fontsize": 48,
-            "fontcolor": "white",
-            "borderw": 2,
-            "bordercolor": "black@0.5",
-            "y_pos": "h*0.10"
+            "fontsize": 40,
+            "fontcolor": "#333333",
+            "box_color": "white",
+            "box_opacity": 0.9,
+            "y_pos": 60,
+            "padding": 15
         },
         "neon": {
-            "fontsize": 55,
-            "fontcolor": "#FF00FF",
-            "borderw": 3,
-            "bordercolor": "#00FFFF",
-            "y_pos": "h*0.15"
+            "fontsize": 44,
+            "fontcolor": "#FF6B00",
+            "box_color": "white",
+            "box_opacity": 0.95,
+            "y_pos": 80,
+            "padding": 18
         }
     }
 
     s = styles.get(style, styles["bold"])
 
-    # FFmpeg drawtext filter with fade animation
+    # Use drawtext with box parameter for white background
+    # box=1 enables the background box, boxcolor sets its color
+    # boxborderw adds padding around text
     drawtext_filter = (
         f"drawtext=text='{escaped_text}'"
         f":fontsize={s['fontsize']}"
         f":fontcolor={s['fontcolor']}"
-        f":borderw={s['borderw']}"
-        f":bordercolor={s['bordercolor']}"
+        f":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         f":x=(w-text_w)/2"
         f":y={s['y_pos']}"
+        f":box=1"
+        f":boxcolor={s['box_color']}@{s['box_opacity']}"
+        f":boxborderw={s['padding']}"
         f":enable='lt(t,{duration})'"
-        f":alpha='if(lt(t,0.5),t*2,if(gt(t,{duration-0.5}),({duration}-t)*2,1))'"
+        f":alpha='if(lt(t,0.3),t/0.3,if(gt(t,{duration-0.3}),({duration}-t)/0.3,1))'"
     )
 
     cmd = [
@@ -213,10 +217,13 @@ def add_hook_overlay(input_video: str, output_video: str, hook_text: str,
     ]
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            print(f"Hook overlay FFmpeg error: {result.stderr[-500:]}", flush=True)
+            return False
         return True
     except Exception as e:
-        print(f"Hook overlay failed: {e}")
+        print(f"Hook overlay failed: {e}", flush=True)
         return False
 
 
@@ -1258,10 +1265,15 @@ Generated from video chapter: {int(chapter['start'])}s - {int(chapter['end'])}s
 # MULTI-OUTPUT FORMAT FUNCTIONS (New Feature)
 # =============================================================================
 
-def get_crop_filter(width: int, height: int, face_count: int = None, last_layout: str = "single") -> tuple:
+def get_crop_filter(width: int, height: int, face_count: int = None,
+                    last_layout: str = "single", face_positions: list = None) -> tuple:
     """
-    Face-aware layout decision.
+    Face-aware layout decision with zoom-to-face for split layout.
     Returns: (filter_string, layout_used)
+
+    For split layout with 2 faces:
+    - Top half: Zoomed crop around face 1 (left person)
+    - Bottom half: Zoomed crop around face 2 (right person)
     """
 
     target_w = settings.output_width   # 1080
@@ -1275,25 +1287,83 @@ def get_crop_filter(width: int, height: int, face_count: int = None, last_layout
         elif face_count == 1:
             layout = "single"
         else:
-            layout = last_layout  # fallback kalau kosong
+            layout = last_layout
     else:
-        # fallback lama (aspect ratio)
         input_ar = width / height
         target_ar = target_w / target_h
         layout = "split" if input_ar > target_ar else "single"
 
     # --- BUILD FILTER ---
-    if layout == "split":
-        return (
-            f"split[top][bottom];"
-            f"[top]scale={target_w}:-2,pad={target_w}:{half_h}:0:(oh-ih)/2:black[top_out];"
-            f"[bottom]scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
-            f"crop={target_w}:{half_h}[bottom_out];"
-            f"[top_out][bottom_out]vstack",
-            "split"
-        )
+    if layout == "split" and face_positions and len(face_positions) >= 2:
+        # SPLIT WITH FACE ZOOM - Each half zooms to a face
+        face1 = face_positions[0]  # Left person -> Top
+        face2 = face_positions[1]  # Right person -> Bottom
 
-    # SINGLE FACE
+        # Calculate crop regions for each face
+        # We want a 9:16 aspect ratio crop centered on each face
+        crop_ar = target_w / half_h  # Aspect ratio for each half (1080 / 960 = 1.125)
+
+        # For each face, calculate a crop region
+        # Crop width based on face size (zoom level) - make it wider for context
+        def calc_face_crop(face, frame_w, frame_h):
+            # Zoom factor - how much area around face to include
+            # Smaller = more zoomed in
+            zoom_factor = 3.5
+
+            crop_w = int(face["w"] * zoom_factor)
+            crop_h = int(crop_w / crop_ar)
+
+            # Ensure minimum crop size
+            min_crop_w = int(frame_w * 0.35)
+            if crop_w < min_crop_w:
+                crop_w = min_crop_w
+                crop_h = int(crop_w / crop_ar)
+
+            # Center crop on face
+            crop_x = face["x"] - crop_w // 2
+            crop_y = face["y"] - crop_h // 3  # Offset up a bit (face in lower third)
+
+            # Clamp to frame bounds
+            crop_x = max(0, min(crop_x, frame_w - crop_w))
+            crop_y = max(0, min(crop_y, frame_h - crop_h))
+
+            # Final clamp if crop is larger than frame
+            crop_w = min(crop_w, frame_w)
+            crop_h = min(crop_h, frame_h)
+
+            return crop_x, crop_y, crop_w, crop_h
+
+        x1, y1, w1, h1 = calc_face_crop(face1, width, height)
+        x2, y2, w2, h2 = calc_face_crop(face2, width, height)
+
+        print(f"DEBUG: Split crops - Face1: ({x1},{y1},{w1},{h1}), Face2: ({x2},{y2},{w2},{h2})", flush=True)
+
+        # Build complex filter: crop each face area, scale to half height, stack
+        filter_str = (
+            f"split[a][b];"
+            f"[a]crop={w1}:{h1}:{x1}:{y1},scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
+            f"crop={target_w}:{half_h}[top];"
+            f"[b]crop={w2}:{h2}:{x2}:{y2},scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
+            f"crop={target_w}:{half_h}[bottom];"
+            f"[top][bottom]vstack"
+        )
+        return (filter_str, "split")
+
+    elif layout == "split":
+        # Fallback split without face positions - just split the frame
+        # Top half shows left side, bottom shows right side
+        half_w = width // 2
+        filter_str = (
+            f"split[a][b];"
+            f"[a]crop={half_w}:{height}:0:0,scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
+            f"crop={target_w}:{half_h}[top];"
+            f"[b]crop={half_w}:{height}:{half_w}:0,scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
+            f"crop={target_w}:{half_h}[bottom];"
+            f"[top][bottom]vstack"
+        )
+        return (filter_str, "split")
+
+    # SINGLE FACE - Zoom to center
     return (
         f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
         f"crop={target_w}:{target_h}",
@@ -1309,6 +1379,62 @@ FACE_CASCADE = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
+
+def detect_faces_with_positions(video_path: str, timestamp: float, frame_w: int, frame_h: int) -> list:
+    """
+    Detect faces and return their positions (sorted left to right).
+    Returns: list of dicts [{"x": center_x, "y": center_y, "w": width, "h": height}, ...]
+    Coordinates are in original video pixels.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        frame_path = tmp.name
+
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", str(timestamp), "-i", video_path,
+             "-vframes", "1", "-q:v", "2", frame_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10
+        )
+
+        img = cv2.imread(frame_path)
+        if img is None:
+            return []
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = FACE_CASCADE.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=4, minSize=(50, 50),
+            flags=cv2.CASCADE_SCALE_IMAGE
+        )
+
+        if len(faces) == 0:
+            return []
+
+        # Convert to list of dicts with center positions
+        face_list = []
+        for (x, y, w, h) in faces:
+            face_list.append({
+                "x": x + w // 2,  # Center X
+                "y": y + h // 2,  # Center Y
+                "w": w,
+                "h": h,
+                "left": x,
+                "top": y
+            })
+
+        # Sort by X position (left to right)
+        face_list.sort(key=lambda f: f["x"])
+
+        print(f"DEBUG: Detected {len(face_list)} faces at {timestamp:.1f}s: {[(f['x'], f['y']) for f in face_list]}", flush=True)
+        return face_list
+
+    except Exception as e:
+        print(f"DEBUG: Face position detection error: {e}", flush=True)
+        return []
+    finally:
+        if os.path.exists(frame_path):
+            os.remove(frame_path)
+
+
 def detect_face_count(video_path: str, timestamp: float) -> int:
     """
     Detect number of faces at a specific timestamp.
@@ -1318,19 +1444,10 @@ def detect_face_count(video_path: str, timestamp: float) -> int:
         frame_path = tmp.name
 
     try:
-        # Extract frame
         subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-ss", str(timestamp),
-                "-i", video_path,
-                "-vframes", "1",
-                "-q:v", "2",
-                frame_path
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10
+            ["ffmpeg", "-y", "-ss", str(timestamp), "-i", video_path,
+             "-vframes", "1", "-q:v", "2", frame_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10
         )
 
         img = cv2.imread(frame_path)
@@ -1339,14 +1456,8 @@ def detect_face_count(video_path: str, timestamp: float) -> int:
             return 0
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # More sensitive face detection for podcast/interview scenarios
-        # Use smaller minSize to detect faces that are farther away
         faces = FACE_CASCADE.detectMultiScale(
-            gray,
-            scaleFactor=1.1,   # More granular scaling (was 1.2)
-            minNeighbors=4,    # Slightly lower threshold (was 5)
-            minSize=(50, 50),  # Smaller min face size (was 80x80)
+            gray, scaleFactor=1.1, minNeighbors=4, minSize=(50, 50),
             flags=cv2.CASCADE_SCALE_IMAGE
         )
 
@@ -1618,7 +1729,6 @@ def generate_clip_with_subtitles(
     else:
         # ---- LEGACY / GLOBAL MODE ----
         # Sample multiple timestamps for better face detection
-        # Increase samples for better accuracy
         sample_times = [
             start + duration * 0.1,
             start + duration * 0.3,
@@ -1627,15 +1737,15 @@ def generate_clip_with_subtitles(
             start + duration * 0.9
         ]
         face_counts = [detect_face_count(input_file, t) for t in sample_times]
-        
+
         # Logic: Default to the most common face count (mode)
         # But if "2 faces" appears in significant portion (>40%), use split view
         from collections import Counter
         counts = Counter(face_counts)
         most_common_count = counts.most_common(1)[0][0]
-        
+
         two_face_ratio = counts.get(2, 0) / len(sample_times)
-        
+
         if two_face_ratio >= 0.4:
             face_count = 2
             print(f"DEBUG: 2 faces detected in {two_face_ratio:.0%} of samples -> Forcing split view", flush=True)
@@ -1643,14 +1753,26 @@ def generate_clip_with_subtitles(
             face_count = most_common_count
             print(f"DEBUG: Using most common face count: {face_count} (Samples: {face_counts})", flush=True)
 
+        # If 2 faces, get their positions for zoom-to-face split layout
+        face_positions = None
+        if face_count >= 2:
+            # Get face positions from the middle of the clip
+            mid_time = start + duration * 0.5
+            face_positions = detect_faces_with_positions(input_file, mid_time, w, h)
+            if len(face_positions) < 2:
+                # Try another timestamp
+                face_positions = detect_faces_with_positions(input_file, start + duration * 0.3, w, h)
+            print(f"DEBUG: Face positions for split: {face_positions}", flush=True)
+
         crop_filter, used_layout = get_crop_filter(
             w,
             h,
             face_count=face_count,
-            last_layout=options.get("last_layout", "single")
+            last_layout=options.get("last_layout", "single"),
+            face_positions=face_positions
         )
         print(f"DEBUG: Layout selected: {used_layout} (face_count={face_count})", flush=True)
-        
+
         options["last_layout"] = used_layout
         base_filter = crop_filter + "[v_cropped]"
 
@@ -2595,6 +2717,10 @@ def process_video_phase1(self, job_id: str, url: str, options: dict = None):
     """
     import json as json_module
 
+    # Reload settings to pick up any changes made via API
+    settings.load_dynamic_settings()
+    print(f"DEBUG: Phase1 - AI Provider: {settings.ai_provider}, Groq Key: {'set' if settings.groq_api_key else 'not set'}", flush=True)
+
     options = options or {}
 
     # Paths
@@ -2786,6 +2912,9 @@ def process_selected_chapters(self, job_id: str, chapter_ids: list, options: dic
     import json as json_module
     import traceback
 
+    # Reload settings to pick up any changes made via API
+    settings.load_dynamic_settings()
+
     options = options or {}
 
     data_dir = settings.data_dir
@@ -2793,6 +2922,8 @@ def process_selected_chapters(self, job_id: str, chapter_ids: list, options: dic
 
     try:
         print(f"DEBUG: Starting process_selected_chapters for {job_id}", flush=True)
+        print(f"DEBUG: Options received: {options}", flush=True)
+        print(f"DEBUG: Settings - auto_hook={settings.enable_auto_hook}, smart_reframe={settings.enable_smart_reframe}", flush=True)
         log_progress(job_dir, "🚀 Starting Phase 2: Processing selected chapters...")
         log_progress(job_dir, f"📋 Selected chapters: {', '.join(chapter_ids)}")
         log_progress(job_dir, f"📂 Job directory: {job_dir}")

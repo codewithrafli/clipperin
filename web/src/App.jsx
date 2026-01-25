@@ -850,6 +850,9 @@ function App() {
             <ChapterSelector
               jobId={chapterSelectJob?.id}
               chapters={chapters}
+              enableAutoHook={enableAutoHook}
+              enableSmartReframe={enableSmartReframe}
+              enableDynamicLayout={enableDynamicLayout}
               onSubmit={() => {
                 onChapterClose()
                 setChapterSelectJob(null)
@@ -1218,7 +1221,7 @@ function ClipCard({ clip, jobId, index, isSelected, onToggleSelect, onPreview })
 }
 
 // ChapterSelector Component
-function ChapterSelector({ jobId, chapters, onSubmit, onCancel }) {
+function ChapterSelector({ jobId, chapters, enableAutoHook, enableSmartReframe, enableDynamicLayout, onSubmit, onCancel }) {
   const [selected, setSelected] = useState(new Set())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -1243,10 +1246,20 @@ function ChapterSelector({ jobId, chapters, onSubmit, onCancel }) {
     setLoading(true)
     setError(null)
     try {
+      // Include AI feature options in the request
+      const payload = {
+        chapter_ids: Array.from(selected),
+        options: {
+          enable_auto_hook: enableAutoHook,
+          enable_smart_reframe: enableSmartReframe,
+          enable_dynamic_layout: enableDynamicLayout
+        }
+      }
+
       const res = await fetch(`${API_BASE}/jobs/${jobId}/select-chapters`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chapter_ids: Array.from(selected) })
+        body: JSON.stringify(payload)
       })
       if (res.ok) {
         onSubmit()
