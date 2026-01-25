@@ -154,8 +154,12 @@ def add_hook_overlay(input_video: str, output_video: str, hook_text: str,
     """Add animated hook text overlay to video using FFmpeg"""
 
     # Escape special characters for FFmpeg
-    escaped_text = hook_text.replace("'", "'\\''").replace(":", "\\:")
-    escaped_text = escaped_text.replace("\\", "\\\\")
+    # 1. Escape backslashes first (so we don't double escape later additions)
+    escaped_text = hook_text.replace("\\", "\\\\")
+    # 2. Escape colons (filter separator)
+    escaped_text = escaped_text.replace(":", "\\:")
+    # 3. Escape single quotes (we are inside text='...')
+    escaped_text = escaped_text.replace("'", "'\\''")
 
     # Style configurations
     styles = {
