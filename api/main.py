@@ -14,7 +14,8 @@ from tasks import (
     process_video,
     process_video_phase1,
     process_selected_chapters,
-    CAPTION_STYLES
+    CAPTION_STYLES,
+    estimate_cost_idr
 )
 
 app = FastAPI(
@@ -435,8 +436,133 @@ def get_settings():
         "target_language": settings.target_language,
         "enable_multi_output": settings.enable_multi_output,
         "enable_social_content": settings.enable_social_content,
-        "ai_available": bool(settings.gemini_api_key or settings.openai_api_key),
-        "whisper_model": settings.whisper_model
+        "whisper_model": settings.whisper_model,
+        # AI Provider settings
+        "ai_provider": settings.ai_provider,
+        "ai_available": bool(settings.gemini_api_key or settings.openai_api_key or settings.groq_api_key),
+        "gemini_configured": bool(settings.gemini_api_key),
+        "groq_configured": bool(settings.groq_api_key),
+        "openai_configured": bool(settings.openai_api_key),
+        # AI Features
+        "enable_auto_hook": settings.enable_auto_hook,
+        "hook_duration": settings.hook_duration,
+        "hook_style": settings.hook_style,
+        "enable_smart_reframe": settings.enable_smart_reframe,
+        "reframe_smoothing": settings.reframe_smoothing,
+    }
+
+
+@app.get("/api/ai-providers")
+def get_ai_providers():
+    """Get available AI providers and their status"""
+    providers = [
+        {
+            "id": "gemini",
+            "name": "Google Gemini",
+            "configured": bool(settings.gemini_api_key),
+            "cost_per_video": "FREE",
+            "cost_idr": 0,
+            "signup_url": "https://aistudio.google.com/app/apikey",
+            "features": ["Hook Generation", "Chapter Analysis"],
+            "recommended": True
+        },
+        {
+            "id": "groq",
+            "name": "Groq (Llama 3.3)",
+            "configured": bool(settings.groq_api_key),
+            "cost_per_video": "~Rp 40",
+            "cost_idr": 40,
+            "signup_url": "https://console.groq.com",
+            "features": ["Hook Generation", "Chapter Analysis", "Super Fast"],
+            "recommended": False,
+            "free_credit": "$10 free, no CC needed"
+        },
+        {
+            "id": "openai",
+            "name": "OpenAI (GPT-4o)",
+            "configured": bool(settings.openai_api_key),
+            "cost_per_video": "~Rp 650",
+            "cost_idr": 650,
+            "signup_url": "https://platform.openai.com/api-keys",
+            "features": ["Hook Generation", "Chapter Analysis", "Best Quality"],
+            "recommended": False
+        },
+        {
+            "id": "none",
+            "name": "Rule-based (Free)",
+            "configured": True,
+            "cost_per_video": "FREE",
+            "cost_idr": 0,
+            "signup_url": None,
+            "features": ["Basic Hook Detection", "Keyword Analysis"],
+            "recommended": False
+        }
+    ]
+
+    return {
+        "providers": providers,
+        "current_provider": settings.ai_provider,
+        "any_configured": any(p["configured"] for p in providers if p["id"] != "none")
+    }
+
+
+@app.post("/api/estimate-cost")
+def estimate_cost(options: dict):
+    """Estimate processing cost in IDR based on selected options"""
+    return estimate_cost_idr(options)
+
+
+@app.get("/api/ai-features")
+def get_ai_features():
+    """Get available AI features with cost info"""
+    provider = settings.ai_provider
+
+    features = [
+        {
+            "id": "auto_hook",
+            "name": "Auto Hook",
+            "description": "Generate viral intro text overlay",
+            "enabled": settings.enable_auto_hook,
+            "cost_idr": 0 if provider in ["gemini", "none"] else (15 if provider == "groq" else 250),
+            "cost_display": "FREE" if provider in ["gemini", "none"] else ("Rp 15" if provider == "groq" else "Rp 250"),
+            "requires_ai": True
+        },
+        {
+            "id": "smart_reframe",
+            "name": "Smart Reframe",
+            "description": "Track speaker face, keep centered",
+            "enabled": settings.enable_smart_reframe,
+            "cost_idr": 0,
+            "cost_display": "FREE",
+            "requires_ai": False
+        },
+        {
+            "id": "ai_chapters",
+            "name": "AI Chapter Analysis",
+            "description": "Smart chapter detection with AI",
+            "enabled": provider != "none",
+            "cost_idr": 0 if provider in ["gemini", "none"] else (25 if provider == "groq" else 400),
+            "cost_display": "FREE" if provider in ["gemini", "none"] else ("Rp 25" if provider == "groq" else "Rp 400"),
+            "requires_ai": True
+        },
+        {
+            "id": "transcription",
+            "name": "Transcription (Whisper)",
+            "description": "Local speech-to-text",
+            "enabled": True,
+            "cost_idr": 0,
+            "cost_display": "FREE",
+            "requires_ai": False
+        }
+    ]
+
+    total_cost = sum(f["cost_idr"] for f in features if f["enabled"])
+
+    return {
+        "features": features,
+        "total_cost_idr": total_cost,
+        "total_cost_display": f"Rp {total_cost:,}".replace(",", ".") if total_cost > 0 else "FREE",
+        "current_provider": provider
     }
 
 

@@ -12,6 +12,389 @@ except ImportError:
 
 import cv2
 import tempfile
+import numpy as np
+
+# =============================================================================
+# AI PROVIDER INTEGRATION (Groq, Gemini, OpenAI)
+# =============================================================================
+
+def get_ai_client():
+    """Get the configured AI client based on settings"""
+    provider = settings.ai_provider.lower()
+
+    if provider == "groq" and settings.groq_api_key:
+        try:
+            from groq import Groq
+            return ("groq", Groq(api_key=settings.groq_api_key))
+        except ImportError:
+            print("Groq package not installed, falling back to Gemini")
+
+    if provider == "gemini" and settings.gemini_api_key:
+        try:
+            from google import genai
+            client = genai.Client(api_key=settings.gemini_api_key)
+            return ("gemini", client)
+        except ImportError:
+            try:
+                import google.generativeai as genai_old
+                genai_old.configure(api_key=settings.gemini_api_key)
+                return ("gemini_old", genai_old)
+            except ImportError:
+                pass
+
+    if provider == "openai" and settings.openai_api_key:
+        try:
+            from openai import OpenAI
+            return ("openai", OpenAI(api_key=settings.openai_api_key))
+        except ImportError:
+            pass
+
+    return ("none", None)
+
+
+def generate_hook_text_ai(transcript_text: str, max_words: int = 8) -> str:
+    """Generate viral hook text using AI"""
+    provider, client = get_ai_client()
+
+    prompt = f"""Generate a viral video hook (maximum {max_words} words) for this transcript.
+Rules:
+- Make it curiosity-driven, emotional, or shocking
+- Use UPPERCASE for emphasis
+- Must grab attention in first 2 seconds
+- No quotes, just the hook text
+
+Transcript (first 500 chars):
+{transcript_text[:500]}
+
+Hook:"""
+
+    try:
+        if provider == "groq":
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50,
+                temperature=0.7
+            )
+            return response.choices[0].message.content.strip()
+
+        elif provider == "gemini":
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
+            return response.text.strip()
+
+        elif provider == "gemini_old":
+            model = client.GenerativeModel("gemini-pro")
+            response = model.generate_content(prompt)
+            return response.text.strip()
+
+        elif provider == "openai":
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50
+            )
+            return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        print(f"AI hook generation failed: {e}")
+
+    # Fallback to rule-based
+    return generate_hook_text_rules(transcript_text, max_words)
+
+
+def generate_hook_text_rules(transcript_text: str, max_words: int = 8) -> str:
+    """Generate hook text using rule-based analysis (FREE)"""
+    hook_keywords = [
+        "rahasia", "ternyata", "gila", "shocking", "penting",
+        "harus", "jangan", "stop", "cara", "tips", "secret",
+        "why", "how", "truth", "real", "actually", "never",
+        "always", "best", "worst", "pertama", "nomor satu"
+    ]
+
+    sentences = transcript_text.replace("?", "? ").replace("!", "! ").replace(".", ". ").split()
+
+    # Find sentence with most hook keywords
+    best_hook = None
+    best_score = 0
+
+    # Split into chunks of ~10 words
+    chunks = []
+    for i in range(0, len(sentences), 10):
+        chunk = " ".join(sentences[i:i+10])
+        chunks.append(chunk)
+
+    for chunk in chunks[:10]:  # Check first 10 chunks
+        score = sum(1 for kw in hook_keywords if kw.lower() in chunk.lower())
+        if "?" in chunk:
+            score += 2
+        if "!" in chunk:
+            score += 1
+
+        if score > best_score:
+            best_score = score
+            best_hook = chunk
+
+    if best_hook:
+        # Truncate to max words and uppercase
+        words = best_hook.split()[:max_words]
+        return " ".join(words).upper()
+
+    # Ultimate fallback
+    return "TONTON SAMPAI HABIS!"
+
+
+def add_hook_overlay(input_video: str, output_video: str, hook_text: str,
+                     duration: int = 5, style: str = "bold") -> bool:
+    """Add animated hook text overlay to video using FFmpeg"""
+
+    # Escape special characters for FFmpeg
+    escaped_text = hook_text.replace("'", "'\\''").replace(":", "\\:")
+    escaped_text = escaped_text.replace("\\", "\\\\")
+
+    # Style configurations
+    styles = {
+        "bold": {
+            "fontsize": 60,
+            "fontcolor": "white",
+            "borderw": 4,
+            "bordercolor": "black",
+            "y_pos": "h*0.12"
+        },
+        "minimal": {
+            "fontsize": 48,
+            "fontcolor": "white",
+            "borderw": 2,
+            "bordercolor": "black@0.5",
+            "y_pos": "h*0.10"
+        },
+        "neon": {
+            "fontsize": 55,
+            "fontcolor": "#FF00FF",
+            "borderw": 3,
+            "bordercolor": "#00FFFF",
+            "y_pos": "h*0.15"
+        }
+    }
+
+    s = styles.get(style, styles["bold"])
+
+    # FFmpeg drawtext filter with fade animation
+    drawtext_filter = (
+        f"drawtext=text='{escaped_text}'"
+        f":fontsize={s['fontsize']}"
+        f":fontcolor={s['fontcolor']}"
+        f":borderw={s['borderw']}"
+        f":bordercolor={s['bordercolor']}"
+        f":x=(w-text_w)/2"
+        f":y={s['y_pos']}"
+        f":enable='lt(t,{duration})'"
+        f":alpha='if(lt(t,0.5),t*2,if(gt(t,{duration-0.5}),({duration}-t)*2,1))'"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_video,
+        "-vf", drawtext_filter,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", str(settings.output_crf),
+        "-c:a", "copy",
+        output_video
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        return True
+    except Exception as e:
+        print(f"Hook overlay failed: {e}")
+        return False
+
+
+# =============================================================================
+# SMART REFRAME (Face Tracking with OpenCV - FREE)
+# =============================================================================
+
+def smart_reframe_video(input_path: str, output_path: str,
+                        target_w: int = 1080, target_h: int = 1920,
+                        smoothing: float = 0.15) -> bool:
+    """
+    Smart reframe video to track speaker face (100% FREE with OpenCV)
+    Keeps the speaker centered in vertical frame
+    """
+
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    )
+
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        print(f"Cannot open video: {input_path}")
+        return False
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    # Calculate crop dimensions to match target aspect ratio
+    target_ar = target_w / target_h
+    orig_ar = orig_w / orig_h
+
+    if orig_ar > target_ar:
+        # Video is wider - crop width
+        crop_h = orig_h
+        crop_w = int(orig_h * target_ar)
+    else:
+        # Video is taller - crop height
+        crop_w = orig_w
+        crop_h = int(orig_w / target_ar)
+
+    # Temp output without audio
+    temp_output = output_path.replace('.mp4', '_temp.mp4')
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(temp_output, fourcc, fps, (target_w, target_h))
+
+    last_center_x = orig_w // 2
+    last_center_y = orig_h // 2
+    detect_every_n = 3  # Detect face every N frames for performance
+
+    frame_count = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Detect face periodically
+        if frame_count % detect_every_n == 0:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(80, 80)
+            )
+
+            if len(faces) > 0:
+                # Get largest face (primary speaker)
+                largest = max(faces, key=lambda f: f[2] * f[3])
+                x, y, w, h = largest
+                face_center_x = x + w // 2
+                face_center_y = y + h // 2
+
+                # Smooth transition
+                last_center_x = int(last_center_x * (1 - smoothing) + face_center_x * smoothing)
+                last_center_y = int(last_center_y * (1 - smoothing) + face_center_y * smoothing)
+
+        # Calculate crop position (keep face centered)
+        crop_x = last_center_x - crop_w // 2
+        crop_y = last_center_y - crop_h // 2
+
+        # Clamp to valid range
+        crop_x = max(0, min(crop_x, orig_w - crop_w))
+        crop_y = max(0, min(crop_y, orig_h - crop_h))
+
+        # Crop and resize
+        cropped = frame[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
+        resized = cv2.resize(cropped, (target_w, target_h))
+
+        out.write(resized)
+        frame_count += 1
+
+        # Progress logging every 10%
+        if frame_count % (total_frames // 10 + 1) == 0:
+            progress = int(frame_count / total_frames * 100)
+            print(f"Reframe progress: {progress}%", flush=True)
+
+    cap.release()
+    out.release()
+
+    # Merge audio from original video
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", temp_output,
+            "-i", input_path,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-map", "0:v:0",
+            "-map", "1:a:0?",
+            "-shortest",
+            output_path
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+
+        # Clean up temp file
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+
+        return True
+    except Exception as e:
+        print(f"Audio merge failed: {e}")
+        # Fallback: use video without audio
+        if os.path.exists(temp_output):
+            os.rename(temp_output, output_path)
+        return True
+
+
+# =============================================================================
+# COST ESTIMATION (IDR)
+# =============================================================================
+
+def estimate_cost_idr(options: dict) -> dict:
+    """Calculate estimated cost in IDR based on selected features"""
+    provider = settings.ai_provider.lower()
+    total = 0
+    breakdown = []
+
+    # Transcription (always free - local Whisper)
+    breakdown.append({"feature": "Transcription (Whisper)", "cost": 0, "note": "FREE - Local"})
+
+    # Hook generation
+    if options.get("enable_auto_hook"):
+        if provider == "gemini":
+            cost = settings.cost_hook_gemini
+            note = "FREE tier"
+        elif provider == "groq":
+            cost = settings.cost_hook_groq
+            note = "~Rp15/video"
+        elif provider == "openai":
+            cost = settings.cost_hook_openai
+            note = "~Rp250/video"
+        else:
+            cost = 0
+            note = "Rule-based (FREE)"
+
+        breakdown.append({"feature": "Auto Hook", "cost": cost, "note": note})
+        total += cost
+
+    # Smart Reframe (always free - OpenCV)
+    if options.get("enable_smart_reframe"):
+        breakdown.append({"feature": "Smart Reframe", "cost": 0, "note": "FREE - OpenCV"})
+
+    # Chapter Analysis
+    if provider in ["gemini", "groq", "openai"]:
+        if provider == "gemini":
+            cost = 0
+            note = "FREE tier"
+        elif provider == "groq":
+            cost = 25
+            note = "~Rp25/video"
+        elif provider == "openai":
+            cost = 400
+            note = "~Rp400/video"
+        breakdown.append({"feature": "AI Chapter Analysis", "cost": cost, "note": note})
+        total += cost
+
+    return {
+        "total_idr": total,
+        "total_display": f"Rp {total:,}".replace(",", "."),
+        "breakdown": breakdown,
+        "provider": provider
+    }
+
 
 # Initialize Celery
 celery_app = Celery(

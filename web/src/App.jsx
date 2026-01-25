@@ -19,6 +19,7 @@ import {
   ModalContent,
   ModalHeader,
   ModalBody,
+  ModalFooter,
   ModalCloseButton,
   Card,
   CardBody,
@@ -30,6 +31,13 @@ import {
   AspectRatio,
   Tooltip,
   SimpleGrid,
+  Switch,
+  FormControl,
+  FormLabel,
+  Divider,
+  Link,
+  InputGroup,
+  InputRightElement,
 } from '@chakra-ui/react'
 
 const API_BASE = '/api'
@@ -48,28 +56,42 @@ function getYouTubeThumbnail(url, quality = 'hqdefault') {
   return `https://img.youtube.com/vi/${videoId}/${quality}.jpg`
 }
 
+// Format currency IDR
+function formatIDR(amount) {
+  if (amount === 0) return 'GRATIS'
+  return `Rp ${amount.toLocaleString('id-ID')}`
+}
+
 function App() {
   const [url, setUrl] = useState('')
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(false)
   const [captionStyles, setCaptionStyles] = useState([])
   const [selectedStyle, setSelectedStyle] = useState('default')
-  const [aiAvailable, setAiAvailable] = useState(false)
-  const [useAi, setUseAi] = useState(false)
   const [filterStatus, setFilterStatus] = useState('all')
   const [selectedJob, setSelectedJob] = useState(null)
   const [chapterSelectJob, setChapterSelectJob] = useState(null)
   const [chapters, setChapters] = useState([])
   const [previewClip, setPreviewClip] = useState(null)
 
+  // AI Settings State
+  const [aiProviders, setAiProviders] = useState([])
+  const [aiFeatures, setAiFeatures] = useState([])
+  const [currentProvider, setCurrentProvider] = useState('none')
+  const [enableAutoHook, setEnableAutoHook] = useState(false)
+  const [enableSmartReframe, setEnableSmartReframe] = useState(false)
+  const [totalCost, setTotalCost] = useState(0)
+
   const { isOpen: isDetailOpen, onOpen: onDetailOpen, onClose: onDetailClose } = useDisclosure()
   const { isOpen: isChapterOpen, onOpen: onChapterOpen, onClose: onChapterClose } = useDisclosure()
   const { isOpen: isPreviewOpen, onOpen: onPreviewOpen, onClose: onPreviewClose } = useDisclosure()
+  const { isOpen: isSettingsOpen, onOpen: onSettingsOpen, onClose: onSettingsClose } = useDisclosure()
 
   useEffect(() => {
     fetchJobs()
     fetchCaptionStyles()
-    fetchDetectionModes()
+    fetchAiProviders()
+    fetchAiFeatures()
     const interval = setInterval(fetchJobs, 3000)
     return () => clearInterval(interval)
   }, [])
@@ -103,6 +125,27 @@ function App() {
     }
   }, [jobs])
 
+  // Calculate total cost when features change
+  useEffect(() => {
+    let cost = 0
+    const provider = aiProviders.find(p => p.id === currentProvider)
+
+    if (enableAutoHook && provider) {
+      if (currentProvider === 'gemini') cost += 0
+      else if (currentProvider === 'groq') cost += 15
+      else if (currentProvider === 'openai') cost += 250
+    }
+
+    // AI Chapter analysis cost
+    if (currentProvider !== 'none' && provider) {
+      if (currentProvider === 'gemini') cost += 0
+      else if (currentProvider === 'groq') cost += 25
+      else if (currentProvider === 'openai') cost += 400
+    }
+
+    setTotalCost(cost)
+  }, [enableAutoHook, enableSmartReframe, currentProvider, aiProviders])
+
   const fetchChapters = useCallback(async (jobId) => {
     try {
       const res = await fetch(`${API_BASE}/jobs/${jobId}/chapters`)
@@ -127,15 +170,33 @@ function App() {
     }
   }, [])
 
-  const fetchDetectionModes = useCallback(async () => {
+  const fetchAiProviders = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/detection-modes`)
+      const res = await fetch(`${API_BASE}/ai-providers`)
       if (res.ok) {
         const data = await res.json()
-        setAiAvailable(data.ai_configured || false)
+        setAiProviders(data.providers || [])
+        setCurrentProvider(data.current_provider || 'none')
       }
     } catch (err) {
-      console.error('Failed to fetch detection modes:', err)
+      console.error('Failed to fetch AI providers:', err)
+    }
+  }, [])
+
+  const fetchAiFeatures = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/ai-features`)
+      if (res.ok) {
+        const data = await res.json()
+        setAiFeatures(data.features || [])
+        // Set initial states from server
+        const hookFeature = data.features?.find(f => f.id === 'auto_hook')
+        const reframeFeature = data.features?.find(f => f.id === 'smart_reframe')
+        if (hookFeature) setEnableAutoHook(hookFeature.enabled)
+        if (reframeFeature) setEnableSmartReframe(reframeFeature.enabled)
+      }
+    } catch (err) {
+      console.error('Failed to fetch AI features:', err)
     }
   }, [])
 
@@ -164,7 +225,9 @@ function App() {
           url: url.trim(),
           caption_style: selectedStyle,
           auto_detect: true,
-          use_ai_detection: useAi
+          use_ai_detection: currentProvider !== 'none',
+          enable_auto_hook: enableAutoHook,
+          enable_smart_reframe: enableSmartReframe
         })
       })
       if (res.ok) {
@@ -175,7 +238,7 @@ function App() {
       console.error('Failed to submit job:', err)
     }
     setLoading(false)
-  }, [url, loading, selectedStyle, useAi, fetchJobs])
+  }, [url, loading, selectedStyle, currentProvider, enableAutoHook, enableSmartReframe, fetchJobs])
 
   const deleteJob = useCallback(async (jobId, e) => {
     e?.stopPropagation()
@@ -237,28 +300,38 @@ function App() {
   // Extract title from URL or first clip
   const getJobTitle = (job) => {
     if (job.clips && job.clips.length > 0 && job.clips[0].title) {
-      // Remove "Part X: " prefix if exists
       return job.clips[0].title.replace(/^Part \d+:\s*/, '').slice(0, 50)
     }
-    // Extract from YouTube URL
     const videoId = getYouTubeVideoId(job.url)
     return videoId ? `Video ${videoId.slice(0, 8)}...` : 'Processing...'
   }
+
+  const configuredProvider = aiProviders.find(p => p.id === currentProvider && p.configured)
 
   return (
     <Box minH="100vh" bg="dark.900" py={8}>
       <Container maxW="7xl">
         {/* Header */}
         <VStack spacing={2} mb={10}>
-          <Heading
-            as="h1"
-            size="2xl"
-            bgGradient="linear(to-r, brand.400, pink.400, orange.400)"
-            bgClip="text"
-            fontWeight="extrabold"
-          >
-            Auto Clipper
-          </Heading>
+          <HStack>
+            <Heading
+              as="h1"
+              size="2xl"
+              bgGradient="linear(to-r, brand.400, pink.400, orange.400)"
+              bgClip="text"
+              fontWeight="extrabold"
+            >
+              Auto Clipper
+            </Heading>
+            <Tooltip label="Settings">
+              <IconButton
+                icon={<Text>⚙️</Text>}
+                variant="ghost"
+                onClick={onSettingsOpen}
+                ml={2}
+              />
+            </Tooltip>
+          </HStack>
           <Badge colorScheme="purple" variant="subtle" px={3} py={1} borderRadius="full">
             No recurring fees - Run locally
           </Badge>
@@ -302,24 +375,40 @@ function App() {
                   </Button>
                 </Flex>
 
-                <Checkbox
-                  isChecked={useAi}
-                  onChange={(e) => setUseAi(e.target.checked)}
-                  isDisabled={!aiAvailable || loading}
-                  colorScheme="purple"
-                >
-                  <HStack spacing={2}>
-                    <Text>Use AI Detection</Text>
-                    {!aiAvailable && (
-                      <Text fontSize="xs" color="gray.500">(Add API key in .env)</Text>
-                    )}
-                  </HStack>
-                </Checkbox>
-
-                <Text fontSize="sm" color="gray.500">
-                  {useAi && aiAvailable ? 'AI-powered detection (Gemini/OpenAI)' : 'Rule-based detection (free)'}
-                  {' '} • Caption: {captionStyles.find(s => s.id === selectedStyle)?.name || 'Default'}
-                </Text>
+                {/* AI Features Summary */}
+                <Card bg="dark.600" w="100%" size="sm">
+                  <CardBody py={3}>
+                    <Flex justify="space-between" align="center" wrap="wrap" gap={2}>
+                      <HStack spacing={4} wrap="wrap">
+                        <HStack>
+                          <Text fontSize="sm" color="gray.400">AI Provider:</Text>
+                          <Badge colorScheme={configuredProvider ? 'green' : 'gray'}>
+                            {configuredProvider?.name || 'Rule-based (Free)'}
+                          </Badge>
+                        </HStack>
+                        {enableAutoHook && (
+                          <Badge colorScheme="purple" variant="subtle">
+                            Auto Hook
+                          </Badge>
+                        )}
+                        {enableSmartReframe && (
+                          <Badge colorScheme="cyan" variant="subtle">
+                            Smart Reframe
+                          </Badge>
+                        )}
+                      </HStack>
+                      <HStack>
+                        <Text fontSize="sm" color="gray.400">Est. Cost:</Text>
+                        <Text fontWeight="bold" color={totalCost === 0 ? 'green.400' : 'yellow.400'}>
+                          {formatIDR(totalCost)}
+                        </Text>
+                        <Button size="xs" variant="ghost" onClick={onSettingsOpen}>
+                          Edit
+                        </Button>
+                      </HStack>
+                    </Flex>
+                  </CardBody>
+                </Card>
               </VStack>
             </form>
           </CardBody>
@@ -376,6 +465,194 @@ function App() {
           )}
         </Box>
       </Container>
+
+      {/* Settings Modal */}
+      <Modal isOpen={isSettingsOpen} onClose={onSettingsClose} size="xl">
+        <ModalOverlay />
+        <ModalContent bg="dark.800">
+          <ModalHeader>AI Settings</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody pb={6}>
+            <VStack spacing={6} align="stretch">
+              {/* AI Provider Selection */}
+              <Box>
+                <Text fontWeight="bold" mb={3}>AI Provider</Text>
+                <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                  {aiProviders.map(provider => (
+                    <Card
+                      key={provider.id}
+                      bg={currentProvider === provider.id ? 'brand.900' : 'dark.600'}
+                      borderWidth="2px"
+                      borderColor={currentProvider === provider.id ? 'brand.500' : 'transparent'}
+                      cursor="pointer"
+                      onClick={() => setCurrentProvider(provider.id)}
+                      _hover={{ borderColor: 'brand.400' }}
+                    >
+                      <CardBody py={3} px={4}>
+                        <HStack justify="space-between">
+                          <VStack align="start" spacing={1}>
+                            <HStack>
+                              <Text fontWeight="bold">{provider.name}</Text>
+                              {provider.recommended && (
+                                <Badge colorScheme="green" size="sm">Recommended</Badge>
+                              )}
+                            </HStack>
+                            <Text fontSize="sm" color={provider.cost_idr === 0 ? 'green.400' : 'yellow.400'}>
+                              {provider.cost_per_video}/video
+                            </Text>
+                            {provider.free_credit && (
+                              <Text fontSize="xs" color="gray.400">{provider.free_credit}</Text>
+                            )}
+                          </VStack>
+                          <Badge colorScheme={provider.configured ? 'green' : 'gray'}>
+                            {provider.configured ? '✓ Ready' : 'Not Set'}
+                          </Badge>
+                        </HStack>
+                        {provider.signup_url && !provider.configured && (
+                          <Link
+                            href={provider.signup_url}
+                            isExternal
+                            fontSize="xs"
+                            color="brand.400"
+                            mt={2}
+                            display="block"
+                          >
+                            Get API Key →
+                          </Link>
+                        )}
+                      </CardBody>
+                    </Card>
+                  ))}
+                </SimpleGrid>
+              </Box>
+
+              <Divider />
+
+              {/* AI Features */}
+              <Box>
+                <Text fontWeight="bold" mb={3}>AI Features</Text>
+                <VStack spacing={3} align="stretch">
+                  {/* Auto Hook */}
+                  <Card bg="dark.600">
+                    <CardBody py={3}>
+                      <Flex justify="space-between" align="center">
+                        <VStack align="start" spacing={0}>
+                          <HStack>
+                            <Text fontWeight="medium">Auto Hook</Text>
+                            <Badge colorScheme="purple" size="sm">AI</Badge>
+                          </HStack>
+                          <Text fontSize="sm" color="gray.400">
+                            Generate viral intro text overlay
+                          </Text>
+                        </VStack>
+                        <HStack>
+                          <Text fontSize="sm" color={currentProvider === 'gemini' || currentProvider === 'none' ? 'green.400' : 'yellow.400'}>
+                            {currentProvider === 'gemini' || currentProvider === 'none' ? 'GRATIS' :
+                              currentProvider === 'groq' ? 'Rp 15' : 'Rp 250'}
+                          </Text>
+                          <Switch
+                            isChecked={enableAutoHook}
+                            onChange={(e) => setEnableAutoHook(e.target.checked)}
+                            colorScheme="purple"
+                          />
+                        </HStack>
+                      </Flex>
+                    </CardBody>
+                  </Card>
+
+                  {/* Smart Reframe */}
+                  <Card bg="dark.600">
+                    <CardBody py={3}>
+                      <Flex justify="space-between" align="center">
+                        <VStack align="start" spacing={0}>
+                          <HStack>
+                            <Text fontWeight="medium">Smart Reframe</Text>
+                            <Badge colorScheme="green" size="sm">FREE</Badge>
+                          </HStack>
+                          <Text fontSize="sm" color="gray.400">
+                            Track speaker face, keep centered
+                          </Text>
+                        </VStack>
+                        <HStack>
+                          <Text fontSize="sm" color="green.400">GRATIS</Text>
+                          <Switch
+                            isChecked={enableSmartReframe}
+                            onChange={(e) => setEnableSmartReframe(e.target.checked)}
+                            colorScheme="purple"
+                          />
+                        </HStack>
+                      </Flex>
+                    </CardBody>
+                  </Card>
+
+                  {/* AI Chapter Analysis */}
+                  <Card bg="dark.600">
+                    <CardBody py={3}>
+                      <Flex justify="space-between" align="center">
+                        <VStack align="start" spacing={0}>
+                          <HStack>
+                            <Text fontWeight="medium">AI Chapter Analysis</Text>
+                            {currentProvider !== 'none' && <Badge colorScheme="purple" size="sm">AI</Badge>}
+                          </HStack>
+                          <Text fontSize="sm" color="gray.400">
+                            Smart chapter detection
+                          </Text>
+                        </VStack>
+                        <Text fontSize="sm" color={currentProvider === 'gemini' || currentProvider === 'none' ? 'green.400' : 'yellow.400'}>
+                          {currentProvider === 'gemini' || currentProvider === 'none' ? 'GRATIS' :
+                            currentProvider === 'groq' ? 'Rp 25' : 'Rp 400'}
+                        </Text>
+                      </Flex>
+                    </CardBody>
+                  </Card>
+
+                  {/* Transcription */}
+                  <Card bg="dark.600">
+                    <CardBody py={3}>
+                      <Flex justify="space-between" align="center">
+                        <VStack align="start" spacing={0}>
+                          <HStack>
+                            <Text fontWeight="medium">Transcription (Whisper)</Text>
+                            <Badge colorScheme="green" size="sm">LOCAL</Badge>
+                          </HStack>
+                          <Text fontSize="sm" color="gray.400">
+                            Speech-to-text processing
+                          </Text>
+                        </VStack>
+                        <Text fontSize="sm" color="green.400">GRATIS</Text>
+                      </Flex>
+                    </CardBody>
+                  </Card>
+                </VStack>
+              </Box>
+
+              <Divider />
+
+              {/* Cost Summary */}
+              <Card bg="brand.900" borderWidth="1px" borderColor="brand.700">
+                <CardBody>
+                  <Flex justify="space-between" align="center">
+                    <Text fontWeight="bold">Estimated Cost per Video</Text>
+                    <Text fontSize="2xl" fontWeight="bold" color={totalCost === 0 ? 'green.400' : 'yellow.400'}>
+                      {formatIDR(totalCost)}
+                    </Text>
+                  </Flex>
+                  {totalCost === 0 && (
+                    <Text fontSize="sm" color="green.400" mt={2}>
+                      All features are FREE with current settings!
+                    </Text>
+                  )}
+                </CardBody>
+              </Card>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="primary" onClick={onSettingsClose}>
+              Save Settings
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
       {/* Job Detail Modal */}
       <Modal isOpen={isDetailOpen} onClose={onDetailClose} size="6xl" scrollBehavior="inside">
