@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Smart Reframe - track speaker face
     enable_smart_reframe: bool = False
     reframe_smoothing: float = 0.15  # Camera movement smoothing (0.1-0.3)
+    
+    # Dynamic Layout - Segment-based layout switching
+    enable_dynamic_layout: bool = False
 
     # ===========================================
     # Cost Tracking (IDR)

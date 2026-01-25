@@ -80,6 +80,7 @@ function App() {
   const [currentProvider, setCurrentProvider] = useState('none')
   const [enableAutoHook, setEnableAutoHook] = useState(false)
   const [enableSmartReframe, setEnableSmartReframe] = useState(false)
+  const [enableDynamicLayout, setEnableDynamicLayout] = useState(false)
   const [totalCost, setTotalCost] = useState(0)
 
   // API Key State
@@ -202,6 +203,10 @@ function App() {
         const reframeFeature = data.features?.find(f => f.id === 'smart_reframe')
         if (hookFeature) setEnableAutoHook(hookFeature.enabled)
         if (reframeFeature) setEnableSmartReframe(reframeFeature.enabled)
+
+        // Currently dynamic layout isn't in features list but in general settings
+        // So we get it from get_settings
+        fetchSettings() 
       }
     } catch (err) {
       console.error('Failed to fetch AI features:', err)
@@ -262,6 +267,18 @@ function App() {
     }
   }, [selectedJob, fetchJobs, onDetailClose])
 
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/settings`)
+      if (res.ok) {
+        const data = await res.json()
+        setEnableDynamicLayout(data.enable_dynamic_layout || false)
+      }
+    } catch(err) {
+      console.error(err)
+    }
+  }
+
   const saveSettings = async () => {
     setIsSaving(true)
     try {
@@ -269,6 +286,7 @@ function App() {
         ai_provider: currentProvider,
         enable_auto_hook: enableAutoHook,
         enable_smart_reframe: enableSmartReframe,
+        enable_dynamic_layout: enableDynamicLayout,
       }
 
       // Only send keys if they are entered
@@ -651,6 +669,31 @@ function App() {
                           <Switch
                             isChecked={enableSmartReframe}
                             onChange={(e) => setEnableSmartReframe(e.target.checked)}
+                            colorScheme="purple"
+                          />
+                        </HStack>
+                      </Flex>
+                    </CardBody>
+                  </Card>
+
+                  {/* Dynamic Layout */}
+                  <Card bg="dark.600">
+                    <CardBody py={3}>
+                      <Flex justify="space-between" align="center">
+                        <VStack align="start" spacing={0}>
+                          <HStack>
+                            <Text fontWeight="medium">Dynamic Layout</Text>
+                            <Badge colorScheme="green" size="sm">FREE</Badge>
+                          </HStack>
+                          <Text fontSize="sm" color="gray.400">
+                            Switch Single/Split view dynamically (Experimental)
+                          </Text>
+                        </VStack>
+                        <HStack>
+                          <Text fontSize="sm" color="green.400">GRATIS</Text>
+                          <Switch
+                            isChecked={enableDynamicLayout}
+                            onChange={(e) => setEnableDynamicLayout(e.target.checked)}
                             colorScheme="purple"
                           />
                         </HStack>

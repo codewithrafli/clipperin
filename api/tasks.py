@@ -1406,6 +1406,159 @@ def generate_clip_raw(
     subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
 
 
+# =============================================================================
+# DYNAMIC LAYOUT LOGIC
+# =============================================================================
+
+def scan_face_timeline(video_path: str, start: float, duration: float, interval: float = 1.0) -> list:
+    """
+    Scan video for face counts at regular intervals.
+    Returns list of (timestamp, face_count).
+    """
+    timeline = []
+    # Sample every 'interval' seconds
+    t = start
+    end = start + duration
+    
+    print(f"DEBUG: Scanning face timeline from {start:.1f}s to {end:.1f}s (interval={interval}s)...", flush=True)
+    
+    while t < end:
+        count = detect_face_count(video_path, t)
+        timeline.append((t - start, count))  # Store relative time
+        t += interval
+        
+    return timeline
+
+
+def resolve_layout_timeline(timeline: list, min_duration: float = 2.0) -> list:
+    """
+    Convert raw face detections into stable layout segments (single/split).
+    Applies hysteresis to prevent flickering.
+    
+    Returns: [{"layout": "single"|"split", "start": 0.0, "end": 5.0}, ...]
+    """
+    if not timeline:
+        return [{"layout": "single", "start": 0.0, "end": 0.0}] # Should not happen
+
+    segments = []
+    
+    # Initial state based on first sample
+    current_layout = "split" if timeline[0][1] >= 2 else "single"
+    segment_start = 0.0
+    
+    # Thresholds for switching
+    # To switch to SPLIT: need consecutive 2-face frames
+    # To switch to SINGLE: need consecutive 1-face frames
+    consecutive_trigger = 2 
+    buffer_count = 0
+    total_duration = timeline[-1][0] + 1.0 # approx
+    
+    for i in range(1, len(timeline)):
+        t, count = timeline[i]
+        
+        # Determine target layout for this frame
+        frame_layout = "split" if count >= 2 else "single"
+        
+        if frame_layout != current_layout:
+            buffer_count += 1
+        else:
+            buffer_count = 0
+            
+        # Check trigger condition
+        # If we have seen 'consecutive_trigger' frames of the *new* layout
+        # AND the current segment has lasted at least 'min_duration'
+        if buffer_count >= consecutive_trigger:
+            current_seg_duration = t - segment_start
+            
+            if current_seg_duration >= min_duration:
+                # Close current segment
+                segments.append({
+                    "layout": current_layout,
+                    "start": segment_start,
+                    "end": t - (consecutive_trigger * 1.0) + 1.0 # Backdate slightly to start of change
+                })
+                
+                # Start new segment
+                current_layout = frame_layout
+                segment_start = segments[-1]["end"]
+                buffer_count = 0
+    
+    # Close final segment
+    segments.append({
+        "layout": current_layout,
+        "start": segment_start,
+        "end": total_duration
+    })
+    
+    return segments
+
+
+def build_dynamic_layout_filter(width: int, height: int, layout_segments: list) -> str:
+    """
+    Build complex FFmpeg filter for dynamic layout switching using overlay enable.
+    """
+    target_w = settings.output_width
+    target_h = settings.output_height
+    half_h = target_h // 2
+    
+    # We will generate TWO streams: [v_single] and [v_split]
+    # Then overlay them based on timeline.
+    
+    # 1. Base Single View Stream
+    filter_base = (
+        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{target_h}[v_single];"
+    )
+    
+    # 2. Split View Stream
+    # Note: We need to use 'split' filter on input if we were doing this in one graph from source.
+    # But since we are appending to existing filter chain, we assume input is [0:v].
+    # Actually, simpler approach:
+    # Use split filter on input node to get two copies.
+    
+    # Let's assume input is fed to this function.
+    # We return the FULL filter chain string starting from input.
+    # Input: [0:v]
+    
+    # Split input into two
+    filter_chain = (
+        f"[0:v]split=2[in_1][in_2];"
+        
+        # Path 1: Single View (Background / Default)
+        f"[in_1]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{target_h}[v_single];"
+        
+        # Path 2: Split View (Overlay)
+        f"[in_2]split=2[top][bottom];"
+        f"[top]scale={target_w}:-2,pad={target_w}:{half_h}:0:(oh-ih)/2:black[v_top];"
+        f"[bottom]scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{half_h}[v_bottom];"
+        f"[v_top][v_bottom]vstack[v_split];"
+    )
+    
+    # 3. Dynamic Overlay
+    # We want to show [v_split] ON TOP of [v_single] ONLY when layout is 'split'
+    
+    enable_expr_parts = []
+    for seg in layout_segments:
+        if seg["layout"] == "split":
+            # enable='between(t,START,END)'
+            enable_expr_parts.append(f"between(t,{seg['start']:.2f},{seg['end']:.2f})")
+            
+    if not enable_expr_parts:
+        # If never split, just pass single
+        return filter_chain + f"[v_single]null[out]"
+        
+    enable_expr = "+".join(enable_expr_parts)
+    
+    filter_chain += (
+        f"[v_single][v_split]overlay=enable='{enable_expr}'[out]"
+    )
+    
+    return filter_chain
+
+
+
 def generate_clip_with_subtitles(
     input_file: str,
     output_file: str,
@@ -1433,29 +1586,75 @@ def generate_clip_with_subtitles(
         w, h = 1920, 1080 # Fallback
 
     # ---- FACE AWARE ----
-    # Sample multiple timestamps for better face detection
-    sample_times = [
-        start + duration * 0.25,
-        start + duration * 0.5,
-        start + duration * 0.75
-    ]
-    face_counts = [detect_face_count(input_file, t) for t in sample_times]
-    face_count = max(face_counts)  # Use highest detected count
-    print(f"DEBUG: Face detection samples: {face_counts}, using max: {face_count}", flush=True)
+    # Check if Dynamic Layout is enabled
+    is_dynamic = options.get("enable_dynamic_layout", settings.enable_dynamic_layout)
+    
+    if is_dynamic:
+        print(f"DEBUG: Dynamic Layout enabled. Scanning timeline...", flush=True)
+        # 1. Scan timeline
+        timeline = scan_face_timeline(input_file, start, duration, interval=1.0)
+        
+        # 2. Resolve layout segments (smoothing)
+        layout_segments = resolve_layout_timeline(timeline, min_duration=2.0)
+        print(f"DEBUG: Resolved layout segments: {layout_segments}", flush=True)
+        
+        # 3. Build complex filter
+        final_filter_chain = build_dynamic_layout_filter(w, h, layout_segments)
+        # Append output label used by next steps
+        # The build_dynamic_layout_filter returns chain ending in [out]
+        # We need to map [out] to [v_cropped] for consistency with below code
+        
+        # Actually, let's adjust:
+        # standard path produces [v_cropped]
+        # dynamic path produces [out]
+        # let's make dynamic produce [v_cropped]
+        final_filter_chain = final_filter_chain.replace("[out]", "[v_cropped]")
+        
+        base_filter = final_filter_chain
+        
+        # Update reported layout for consistency (just say dynamic)
+        options["last_layout"] = "dynamic"
+        
+    else:
+        # ---- LEGACY / GLOBAL MODE ----
+        # Sample multiple timestamps for better face detection
+        # Increase samples for better accuracy
+        sample_times = [
+            start + duration * 0.1,
+            start + duration * 0.3,
+            start + duration * 0.5,
+            start + duration * 0.7,
+            start + duration * 0.9
+        ]
+        face_counts = [detect_face_count(input_file, t) for t in sample_times]
+        
+        # Logic: Default to the most common face count (mode)
+        # But if "2 faces" appears in significant portion (>40%), use split view
+        from collections import Counter
+        counts = Counter(face_counts)
+        most_common_count = counts.most_common(1)[0][0]
+        
+        two_face_ratio = counts.get(2, 0) / len(sample_times)
+        
+        if two_face_ratio >= 0.4:
+            face_count = 2
+            print(f"DEBUG: 2 faces detected in {two_face_ratio:.0%} of samples -> Forcing split view", flush=True)
+        else:
+            face_count = most_common_count
+            print(f"DEBUG: Using most common face count: {face_count} (Samples: {face_counts})", flush=True)
 
-    crop_filter, used_layout = get_crop_filter(
-        w,
-        h,
-        face_count=face_count,
-        last_layout=options.get("last_layout", "single")
-    )
-    print(f"DEBUG: Layout selected: {used_layout} (face_count={face_count})", flush=True)
-
-    options["last_layout"] = used_layout
+        crop_filter, used_layout = get_crop_filter(
+            w,
+            h,
+            face_count=face_count,
+            last_layout=options.get("last_layout", "single")
+        )
+        print(f"DEBUG: Layout selected: {used_layout} (face_count={face_count})", flush=True)
+        
+        options["last_layout"] = used_layout
+        base_filter = crop_filter + "[v_cropped]"
 
     # Combine crop filter with subtitles
-    base_filter = crop_filter + "[v_cropped]"
-
     final_filter = (
         f"{base_filter};"
         f"[v_cropped]subtitles={escaped_srt}:force_style='{style['style']}',"

@@ -144,6 +144,7 @@ class SettingsUpdate(BaseModel):
     enable_auto_hook: Optional[bool] = None
     enable_smart_reframe: Optional[bool] = None
     enable_two_phase_flow: Optional[bool] = None
+    enable_dynamic_layout: Optional[bool] = None
     # Add other fields as needed
 
 
@@ -464,6 +465,7 @@ def get_settings():
         "hook_style": settings.hook_style,
         "enable_smart_reframe": settings.enable_smart_reframe,
         "reframe_smoothing": settings.reframe_smoothing,
+        "enable_dynamic_layout": settings.enable_dynamic_layout,
     }
 
 
