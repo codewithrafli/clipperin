@@ -145,7 +145,13 @@ class SettingsUpdate(BaseModel):
     enable_smart_reframe: Optional[bool] = None
     enable_two_phase_flow: Optional[bool] = None
     enable_dynamic_layout: Optional[bool] = None
-    # Add other fields as needed
+    # Progress Bar
+    enable_progress_bar: Optional[bool] = None
+    progress_bar_color: Optional[str] = None
+    progress_bar_height: Optional[int] = None
+    progress_bar_position: Optional[str] = None
+    # Aspect Ratio
+    output_aspect_ratio: Optional[str] = None
 
 
 
@@ -466,6 +472,13 @@ def get_settings():
         "enable_smart_reframe": settings.enable_smart_reframe,
         "reframe_smoothing": settings.reframe_smoothing,
         "enable_dynamic_layout": settings.enable_dynamic_layout,
+        # Progress Bar
+        "enable_progress_bar": settings.enable_progress_bar,
+        "progress_bar_color": settings.progress_bar_color,
+        "progress_bar_height": settings.progress_bar_height,
+        "progress_bar_position": settings.progress_bar_position,
+        # Aspect Ratio
+        "output_aspect_ratio": settings.output_aspect_ratio,
     }
 
 

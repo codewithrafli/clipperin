@@ -83,6 +83,11 @@ function App() {
   const [enableDynamicLayout, setEnableDynamicLayout] = useState(false)
   const [totalCost, setTotalCost] = useState(0)
 
+  // Progress Bar & Aspect Ratio State
+  const [enableProgressBar, setEnableProgressBar] = useState(true)
+  const [progressBarColor, setProgressBarColor] = useState('#FF0050')
+  const [aspectRatio, setAspectRatio] = useState('9:16')
+
   // API Key State
   const [apiKeys, setApiKeys] = useState({
     gemini: '',
@@ -273,6 +278,9 @@ function App() {
       if (res.ok) {
         const data = await res.json()
         setEnableDynamicLayout(data.enable_dynamic_layout || false)
+        setEnableProgressBar(data.enable_progress_bar !== false) // Default true
+        if (data.progress_bar_color) setProgressBarColor(data.progress_bar_color)
+        if (data.output_aspect_ratio) setAspectRatio(data.output_aspect_ratio)
       }
     } catch(err) {
       console.error(err)
@@ -287,6 +295,9 @@ function App() {
         enable_auto_hook: enableAutoHook,
         enable_smart_reframe: enableSmartReframe,
         enable_dynamic_layout: enableDynamicLayout,
+        enable_progress_bar: enableProgressBar,
+        progress_bar_color: progressBarColor,
+        output_aspect_ratio: aspectRatio,
       }
 
       // Only send keys if they are entered
@@ -701,6 +712,61 @@ function App() {
                     </CardBody>
                   </Card>
 
+                  {/* Progress Bar */}
+                  <Card bg="dark.600">
+                    <CardBody py={3}>
+                      <Flex justify="space-between" align="center">
+                        <VStack align="start" spacing={0}>
+                          <HStack>
+                            <Text fontWeight="medium">Progress Bar</Text>
+                            <Badge colorScheme="green" size="sm">FREE</Badge>
+                          </HStack>
+                          <Text fontSize="sm" color="gray.400">
+                            Animated bar at bottom of video
+                          </Text>
+                        </VStack>
+                        <HStack spacing={3}>
+                          <input
+                            type="color"
+                            value={progressBarColor}
+                            onChange={(e) => setProgressBarColor(e.target.value)}
+                            style={{ width: '32px', height: '32px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                          />
+                          <Switch
+                            isChecked={enableProgressBar}
+                            onChange={(e) => setEnableProgressBar(e.target.checked)}
+                            colorScheme="purple"
+                          />
+                        </HStack>
+                      </Flex>
+                    </CardBody>
+                  </Card>
+
+                  {/* Aspect Ratio */}
+                  <Card bg="dark.600">
+                    <CardBody py={3}>
+                      <Flex justify="space-between" align="center">
+                        <VStack align="start" spacing={0}>
+                          <Text fontWeight="medium">Aspect Ratio</Text>
+                          <Text fontSize="sm" color="gray.400">
+                            Output video dimensions
+                          </Text>
+                        </VStack>
+                        <Select
+                          value={aspectRatio}
+                          onChange={(e) => setAspectRatio(e.target.value)}
+                          w="140px"
+                          size="sm"
+                          bg="dark.700"
+                        >
+                          <option value="9:16">9:16 (TikTok)</option>
+                          <option value="1:1">1:1 (Square)</option>
+                          <option value="4:5">4:5 (IG/FB)</option>
+                        </Select>
+                      </Flex>
+                    </CardBody>
+                  </Card>
+
                   {/* AI Chapter Analysis */}
                   <Card bg="dark.600">
                     <CardBody py={3}>
@@ -853,6 +919,9 @@ function App() {
               enableAutoHook={enableAutoHook}
               enableSmartReframe={enableSmartReframe}
               enableDynamicLayout={enableDynamicLayout}
+              enableProgressBar={enableProgressBar}
+              progressBarColor={progressBarColor}
+              aspectRatio={aspectRatio}
               onSubmit={() => {
                 onChapterClose()
                 setChapterSelectJob(null)
@@ -1221,7 +1290,10 @@ function ClipCard({ clip, jobId, index, isSelected, onToggleSelect, onPreview })
 }
 
 // ChapterSelector Component
-function ChapterSelector({ jobId, chapters, enableAutoHook, enableSmartReframe, enableDynamicLayout, onSubmit, onCancel }) {
+function ChapterSelector({
+  jobId, chapters, enableAutoHook, enableSmartReframe, enableDynamicLayout,
+  enableProgressBar, progressBarColor, aspectRatio, onSubmit, onCancel
+}) {
   const [selected, setSelected] = useState(new Set())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -1246,13 +1318,16 @@ function ChapterSelector({ jobId, chapters, enableAutoHook, enableSmartReframe, 
     setLoading(true)
     setError(null)
     try {
-      // Include AI feature options in the request
+      // Include all feature options in the request
       const payload = {
         chapter_ids: Array.from(selected),
         options: {
           enable_auto_hook: enableAutoHook,
           enable_smart_reframe: enableSmartReframe,
-          enable_dynamic_layout: enableDynamicLayout
+          enable_dynamic_layout: enableDynamicLayout,
+          enable_progress_bar: enableProgressBar,
+          progress_bar_color: progressBarColor,
+          output_aspect_ratio: aspectRatio
         }
       }
 

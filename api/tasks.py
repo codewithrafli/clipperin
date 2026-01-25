@@ -1265,8 +1265,31 @@ Generated from video chapter: {int(chapter['start'])}s - {int(chapter['end'])}s
 # MULTI-OUTPUT FORMAT FUNCTIONS (New Feature)
 # =============================================================================
 
+def get_output_dimensions(aspect_ratio: str = None) -> tuple:
+    """
+    Get output dimensions based on aspect ratio.
+    Returns: (width, height)
+
+    Supported ratios:
+    - "9:16" (TikTok/Reels): 1080x1920
+    - "1:1" (IG Square): 1080x1080
+    - "4:5" (IG/FB): 1080x1350
+    """
+    ratio = aspect_ratio or settings.output_aspect_ratio
+
+    base_width = settings.output_width  # 1080
+
+    if ratio == "1:1":
+        return (base_width, base_width)  # 1080x1080
+    elif ratio == "4:5":
+        return (base_width, int(base_width * 5 / 4))  # 1080x1350
+    else:  # Default 9:16
+        return (base_width, int(base_width * 16 / 9))  # 1080x1920
+
+
 def get_crop_filter(width: int, height: int, face_count: int = None,
-                    last_layout: str = "single", face_positions: list = None) -> tuple:
+                    last_layout: str = "single", face_positions: list = None,
+                    aspect_ratio: str = None) -> tuple:
     """
     Face-aware layout decision with zoom-to-face for split layout.
     Returns: (filter_string, layout_used)
@@ -1276,8 +1299,7 @@ def get_crop_filter(width: int, height: int, face_count: int = None,
     - Bottom half: Zoomed crop around face 2 (right person)
     """
 
-    target_w = settings.output_width   # 1080
-    target_h = settings.output_height  # 1920
+    target_w, target_h = get_output_dimensions(aspect_ratio)
     half_h = target_h // 2
 
     # --- FACE-BASED DECISION ---
@@ -1541,71 +1563,107 @@ def scan_face_timeline(video_path: str, start: float, duration: float, interval:
     return timeline
 
 
-def resolve_layout_timeline(timeline: list, min_duration: float = 2.0) -> list:
+def resolve_layout_timeline(timeline: list, min_duration: float = 3.0) -> list:
     """
     Convert raw face detections into stable layout segments (single/split).
     Applies hysteresis to prevent flickering.
-    
+
+    Strategy:
+    - Default to SINGLE (safer, less jarring)
+    - Only switch to SPLIT if there's strong evidence (many consecutive 2-face frames)
+    - Require longer duration for SPLIT segments (min 4 seconds)
+
     Returns: [{"layout": "single"|"split", "start": 0.0, "end": 5.0}, ...]
     """
     if not timeline:
-        return [{"layout": "single", "start": 0.0, "end": 0.0}] # Should not happen
+        return [{"layout": "single", "start": 0.0, "end": 0.0}]
 
     segments = []
-    
-    # Initial state based on first sample
-    current_layout = "split" if timeline[0][1] >= 2 else "single"
+    total_duration = timeline[-1][0] + 1.0
+
+    # Count 2-face ratio in first 5 seconds to decide initial layout
+    first_5s = [t for t in timeline if t[0] <= 5.0]
+    two_face_count = sum(1 for _, c in first_5s if c >= 2)
+    two_face_ratio = two_face_count / len(first_5s) if first_5s else 0
+
+    # Only start with split if >70% of first 5 seconds shows 2 faces
+    current_layout = "split" if two_face_ratio > 0.7 else "single"
     segment_start = 0.0
-    
-    # Thresholds for switching
-    # To switch to SPLIT: need consecutive 2-face frames
-    # To switch to SINGLE: need consecutive 1-face frames
-    consecutive_trigger = 2 
+
+    print(f"DEBUG: Initial layout decision - 2-face ratio in first 5s: {two_face_ratio:.0%} -> {current_layout}", flush=True)
+
+    # Thresholds - require MORE consecutive frames to switch to split
+    split_trigger = 4  # Need 4 consecutive 2-face frames to switch TO split
+    single_trigger = 2  # Need 2 consecutive 1-face frames to switch TO single
+    min_split_duration = 4.0  # Split segments must be at least 4 seconds
+
     buffer_count = 0
-    total_duration = timeline[-1][0] + 1.0 # approx
-    
+    pending_layout = None
+
     for i in range(1, len(timeline)):
         t, count = timeline[i]
-        
-        # Determine target layout for this frame
         frame_layout = "split" if count >= 2 else "single"
-        
+
         if frame_layout != current_layout:
-            buffer_count += 1
+            if pending_layout == frame_layout:
+                buffer_count += 1
+            else:
+                pending_layout = frame_layout
+                buffer_count = 1
         else:
+            pending_layout = None
             buffer_count = 0
-            
+
         # Check trigger condition
-        # If we have seen 'consecutive_trigger' frames of the *new* layout
-        # AND the current segment has lasted at least 'min_duration'
-        if buffer_count >= consecutive_trigger:
+        trigger_threshold = split_trigger if pending_layout == "split" else single_trigger
+
+        if buffer_count >= trigger_threshold and pending_layout:
             current_seg_duration = t - segment_start
-            
-            if current_seg_duration >= min_duration:
+            min_dur = min_split_duration if current_layout == "split" else min_duration
+
+            if current_seg_duration >= min_dur:
                 # Close current segment
                 segments.append({
                     "layout": current_layout,
                     "start": segment_start,
-                    "end": t - (consecutive_trigger * 1.0) + 1.0 # Backdate slightly to start of change
+                    "end": t - (trigger_threshold * 1.0) + 1.0
                 })
-                
-                # Start new segment
-                current_layout = frame_layout
+
+                current_layout = pending_layout
                 segment_start = segments[-1]["end"]
                 buffer_count = 0
-    
+                pending_layout = None
+
     # Close final segment
     segments.append({
         "layout": current_layout,
         "start": segment_start,
         "end": total_duration
     })
+
+    # Post-process: Remove very short split segments (< 4 seconds)
+    # Merge them with surrounding single segments
+    cleaned = []
+    for seg in segments:
+        if seg["layout"] == "split" and (seg["end"] - seg["start"]) < min_split_duration:
+            # Too short split, convert to single
+            seg["layout"] = "single"
+
+        # Merge consecutive same-layout segments
+        if cleaned and cleaned[-1]["layout"] == seg["layout"]:
+            cleaned[-1]["end"] = seg["end"]
+        else:
+            cleaned.append(seg)
+
+    print(f"DEBUG: Final layout segments after cleanup: {cleaned}", flush=True)
+    return cleaned
     
     return segments
 
 
 def build_dynamic_layout_filter(width: int, height: int, layout_segments: list,
-                                 face_positions: list = None) -> str:
+                                 face_positions: list = None,
+                                 aspect_ratio: str = None) -> str:
     """
     Build complex FFmpeg filter for dynamic layout switching.
 
@@ -1613,8 +1671,7 @@ def build_dynamic_layout_filter(width: int, height: int, layout_segments: list,
     zooms each to fill half the output, then stacks vertically.
     This shows Person 1 (left) on top and Person 2 (right) on bottom.
     """
-    target_w = settings.output_width
-    target_h = settings.output_height
+    target_w, target_h = get_output_dimensions(aspect_ratio)
     half_h = target_h // 2
 
     # Calculate crop regions for split view
@@ -1802,11 +1859,29 @@ def generate_clip_with_subtitles(
         options["last_layout"] = used_layout
         base_filter = crop_filter + "[v_cropped]"
 
-    # Combine crop filter with subtitles
+    # Combine crop filter with subtitles and progress bar
+    subtitle_filter = f"subtitles={escaped_srt}:force_style='{style['style']}'"
+    color_filter = "eq=contrast=1.05:saturation=1.1"
+
+    # Progress bar filter (animated bar that grows with video time)
+    progress_bar_filter = ""
+    if options.get("enable_progress_bar", settings.enable_progress_bar):
+        bar_color = options.get("progress_bar_color", settings.progress_bar_color)
+        bar_height = options.get("progress_bar_height", settings.progress_bar_height)
+        bar_pos = options.get("progress_bar_position", settings.progress_bar_position)
+
+        # Y position: bottom or top
+        y_expr = f"h-{bar_height}" if bar_pos == "bottom" else "0"
+
+        # Width expression: grows from 0 to full width based on time/duration
+        # t = current time, duration = total duration
+        w_expr = f"t/{duration}*w"
+
+        progress_bar_filter = f",drawbox=x=0:y={y_expr}:w='{w_expr}':h={bar_height}:color={bar_color}:t=fill"
+
     final_filter = (
         f"{base_filter};"
-        f"[v_cropped]subtitles={escaped_srt}:force_style='{style['style']}',"
-        f"eq=contrast=1.05:saturation=1.1"
+        f"[v_cropped]{subtitle_filter},{color_filter}{progress_bar_filter}"
     )
 
     ffmpeg_cmd = [

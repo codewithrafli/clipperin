@@ -48,6 +48,20 @@ class Settings(BaseSettings):
     enable_dynamic_layout: bool = False
 
     # ===========================================
+    # Progress Bar Settings
+    # ===========================================
+    enable_progress_bar: bool = True
+    progress_bar_color: str = "#FF0050"  # TikTok pink/red
+    progress_bar_height: int = 6
+    progress_bar_position: str = "bottom"  # "bottom" or "top"
+
+    # ===========================================
+    # Aspect Ratio Settings
+    # ===========================================
+    # Options: "9:16" (TikTok/Reels), "1:1" (IG Square), "4:5" (IG/FB)
+    output_aspect_ratio: str = "9:16"
+
+    # ===========================================
     # Cost Tracking (IDR)
     # ===========================================
     # Approximate costs per feature (in IDR)
