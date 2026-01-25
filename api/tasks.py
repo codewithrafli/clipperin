@@ -1604,68 +1604,93 @@ def resolve_layout_timeline(timeline: list, min_duration: float = 2.0) -> list:
     return segments
 
 
-def build_dynamic_layout_filter(width: int, height: int, layout_segments: list) -> str:
+def build_dynamic_layout_filter(width: int, height: int, layout_segments: list,
+                                 face_positions: list = None) -> str:
     """
-    Build complex FFmpeg filter for dynamic layout switching using overlay enable.
+    Build complex FFmpeg filter for dynamic layout switching.
+
+    For split view: Crops LEFT half and RIGHT half of landscape video,
+    zooms each to fill half the output, then stacks vertically.
+    This shows Person 1 (left) on top and Person 2 (right) on bottom.
     """
     target_w = settings.output_width
     target_h = settings.output_height
     half_h = target_h // 2
-    
-    # We will generate TWO streams: [v_single] and [v_split]
-    # Then overlay them based on timeline.
-    
-    # 1. Base Single View Stream
-    filter_base = (
-        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
-        f"crop={target_w}:{target_h}[v_single];"
-    )
-    
-    # 2. Split View Stream
-    # Note: We need to use 'split' filter on input if we were doing this in one graph from source.
-    # But since we are appending to existing filter chain, we assume input is [0:v].
-    # Actually, simpler approach:
-    # Use split filter on input node to get two copies.
-    
-    # Let's assume input is fed to this function.
-    # We return the FULL filter chain string starting from input.
-    # Input: [0:v]
-    
-    # Split input into two
+
+    # Calculate crop regions for split view
+    # For landscape video (1920x1080), we crop:
+    # - Left half: crop left 50% of frame, zoom to face
+    # - Right half: crop right 50% of frame, zoom to face
+    half_w = width // 2
+
+    # If we have face positions, use them for more precise cropping
+    if face_positions and len(face_positions) >= 2:
+        face1 = face_positions[0]  # Left person -> Top
+        face2 = face_positions[1]  # Right person -> Bottom
+
+        # Crop around each face with some context
+        crop_ar = target_w / half_h  # 1080/960 = 1.125
+
+        def calc_crop(face, frame_w, frame_h):
+            zoom = 3.0
+            cw = int(face["w"] * zoom)
+            ch = int(cw / crop_ar)
+            cw = max(cw, int(frame_w * 0.3))
+            ch = int(cw / crop_ar)
+            cx = face["x"] - cw // 2
+            cy = face["y"] - ch // 3
+            cx = max(0, min(cx, frame_w - cw))
+            cy = max(0, min(cy, frame_h - ch))
+            cw = min(cw, frame_w)
+            ch = min(ch, frame_h)
+            return cx, cy, cw, ch
+
+        x1, y1, w1, h1 = calc_crop(face1, width, height)
+        x2, y2, w2, h2 = calc_crop(face2, width, height)
+
+        split_top = f"crop={w1}:{h1}:{x1}:{y1},scale={target_w}:{half_h}:force_original_aspect_ratio=increase,crop={target_w}:{half_h}"
+        split_bottom = f"crop={w2}:{h2}:{x2}:{y2},scale={target_w}:{half_h}:force_original_aspect_ratio=increase,crop={target_w}:{half_h}"
+    else:
+        # Fallback: Simple left/right split of the frame
+        # Left half for top, right half for bottom
+        split_top = f"crop={half_w}:{height}:0:0,scale={target_w}:{half_h}:force_original_aspect_ratio=increase,crop={target_w}:{half_h}"
+        split_bottom = f"crop={half_w}:{height}:{half_w}:0,scale={target_w}:{half_h}:force_original_aspect_ratio=increase,crop={target_w}:{half_h}"
+
+    # Build filter chain
     filter_chain = (
-        f"[0:v]split=2[in_1][in_2];"
-        
-        # Path 1: Single View (Background / Default)
-        f"[in_1]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"[0:v]split=3[in_single][in_top][in_bottom];"
+
+        # Single view (center crop, full height)
+        f"[in_single]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
         f"crop={target_w}:{target_h}[v_single];"
-        
-        # Path 2: Split View (Overlay)
-        f"[in_2]split=2[top][bottom];"
-        f"[top]scale={target_w}:-2,pad={target_w}:{half_h}:0:(oh-ih)/2:black[v_top];"
-        f"[bottom]scale={target_w}:{half_h}:force_original_aspect_ratio=increase,"
-        f"crop={target_w}:{half_h}[v_bottom];"
+
+        # Split view - Top (left person or face 1)
+        f"[in_top]{split_top}[v_top];"
+
+        # Split view - Bottom (right person or face 2)
+        f"[in_bottom]{split_bottom}[v_bottom];"
+
+        # Stack top and bottom for split view
         f"[v_top][v_bottom]vstack[v_split];"
     )
-    
-    # 3. Dynamic Overlay
-    # We want to show [v_split] ON TOP of [v_single] ONLY when layout is 'split'
-    
+
+    # Build enable expression for when to show split view
     enable_expr_parts = []
     for seg in layout_segments:
         if seg["layout"] == "split":
-            # enable='between(t,START,END)'
             enable_expr_parts.append(f"between(t,{seg['start']:.2f},{seg['end']:.2f})")
-            
+
     if not enable_expr_parts:
-        # If never split, just pass single
+        # Never split - just use single view
         return filter_chain + f"[v_single]null[out]"
-        
+
     enable_expr = "+".join(enable_expr_parts)
-    
+
+    # Overlay split view on top of single view when enabled
     filter_chain += (
         f"[v_single][v_split]overlay=enable='{enable_expr}'[out]"
     )
-    
+
     return filter_chain
 
 
@@ -1704,26 +1729,27 @@ def generate_clip_with_subtitles(
         print(f"DEBUG: Dynamic Layout enabled. Scanning timeline...", flush=True)
         # 1. Scan timeline
         timeline = scan_face_timeline(input_file, start, duration, interval=1.0)
-        
+
         # 2. Resolve layout segments (smoothing)
         layout_segments = resolve_layout_timeline(timeline, min_duration=2.0)
         print(f"DEBUG: Resolved layout segments: {layout_segments}", flush=True)
-        
-        # 3. Build complex filter
-        final_filter_chain = build_dynamic_layout_filter(w, h, layout_segments)
-        # Append output label used by next steps
-        # The build_dynamic_layout_filter returns chain ending in [out]
-        # We need to map [out] to [v_cropped] for consistency with below code
-        
-        # Actually, let's adjust:
-        # standard path produces [v_cropped]
-        # dynamic path produces [out]
-        # let's make dynamic produce [v_cropped]
+
+        # 3. Detect face positions for split layout (sample from middle of video)
+        face_positions = None
+        has_split = any(seg["layout"] == "split" for seg in layout_segments)
+        if has_split:
+            mid_time = start + duration * 0.5
+            face_positions = detect_faces_with_positions(input_file, mid_time, w, h)
+            if len(face_positions) < 2:
+                # Try another timestamp
+                face_positions = detect_faces_with_positions(input_file, start + duration * 0.25, w, h)
+            print(f"DEBUG: Face positions for dynamic split: {face_positions}", flush=True)
+
+        # 4. Build complex filter with face positions
+        final_filter_chain = build_dynamic_layout_filter(w, h, layout_segments, face_positions)
         final_filter_chain = final_filter_chain.replace("[out]", "[v_cropped]")
-        
+
         base_filter = final_filter_chain
-        
-        # Update reported layout for consistency (just say dynamic)
         options["last_layout"] = "dynamic"
         
     else:
