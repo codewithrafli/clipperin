@@ -1738,8 +1738,8 @@ def build_dynamic_layout_filter(width: int, height: int, layout_segments: list,
             enable_expr_parts.append(f"between(t,{seg['start']:.2f},{seg['end']:.2f})")
 
     if not enable_expr_parts:
-        # Never split - just use single view
-        return filter_chain + f"[v_single]null[out]"
+        # Never split - just use single view (skip split view creation entirely)
+        return f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}[out]"
 
     enable_expr = "+".join(enable_expr_parts)
 
@@ -1874,14 +1874,14 @@ def generate_clip_with_subtitles(
         y_expr = f"h-{bar_height}" if bar_pos == "bottom" else "0"
 
         # Width expression: grows from 0 to full width based on time/duration
-        # t = current time, duration = total duration
-        w_expr = f"t/{duration}*w"
+        # t = current time, duration = total duration, iw = input width
+        w_expr = f"t/{duration}*iw"
 
         progress_bar_filter = f",drawbox=x=0:y={y_expr}:w='{w_expr}':h={bar_height}:color={bar_color}:t=fill"
 
     final_filter = (
         f"{base_filter};"
-        f"[v_cropped]{subtitle_filter},{color_filter}{progress_bar_filter}"
+        f"[v_cropped]{subtitle_filter},{color_filter}{progress_bar_filter}[vout]"
     )
 
     ffmpeg_cmd = [
@@ -1890,6 +1890,8 @@ def generate_clip_with_subtitles(
         "-ss", str(start),
         "-t", str(duration),
         "-filter_complex", final_filter,
+        "-map", "[vout]",
+        "-map", "0:a?",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", str(settings.output_crf),
@@ -2845,10 +2847,12 @@ def process_video_phase1(self, job_id: str, url: str, options: dict = None):
             try:
                 download_cmd = [
                     "yt-dlp",
-                    "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]",
+                    "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
                     "--merge-output-format", "mp4",
                     "--no-playlist",
                     "--max-filesize", "500M",
+                    "--extractor-args", "youtube:player_client=android",
+                    "--no-check-certificates",
                     "-o", input_file,
                     url
                 ]
