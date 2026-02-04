@@ -231,6 +231,15 @@ Update yt-dlp:
 docker-compose exec worker pip install -U yt-dlp
 ```
 
+## 🙏 Support
+
+Clipperin is free and open-source (MIT License). If you find this tool useful and want to support its development, you can donate via:
+
+**Trakteer** (Indonesian crowdfunding)
+- [trakteer.id/codewithrafli](https://trakteer.id/codewithrafli)
+
+---
+
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) file for details.
