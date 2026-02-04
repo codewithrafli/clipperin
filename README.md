@@ -159,17 +159,56 @@ curl -X POST http://localhost:8000/api/jobs \
 
 ```
 clipper-engine/
-├── docker-compose.yml    # Main orchestration
-├── .env.example          # Configuration template
-├── api/                  # FastAPI backend
-│   ├── main.py           # API endpoints
-│   ├── tasks.py          # Video processing (Celery)
-│   └── config.py         # Settings
-├── web/                  # React dashboard
-│   └── src/App.jsx       # Main UI
-├── landing/              # Marketing page
+├── packages/
+│   ├── clipper-core/     # Pure Python library (no UI/CLI)
+│   │   ├── models/       # Job, Chapter, Clip, Config
+│   │   ├── pipeline/     # Pipeline orchestration & stages
+│   │   ├── processors/   # Downloader, Transcriber, Analyzer, Renderer
+│   │   ├── ai/           # AI providers (Gemini, Groq, OpenAI)
+│   │   └── utils/        # Video, audio, time utilities
+│   ├── clipper-cli/      # Command-line interface
+│   │   ├── commands/     # CLI commands (download, transcribe, etc.)
+│   │   ├── output/       # Table, progress, JSON formatting
+│   │   └── config/       # Settings management
+│   └── clipper-ui/       # Web UI
+│       ├── backend/      # FastAPI server
+│       └── frontend/     # React SPA
+├── scripts/              # Shell wrappers
+├── docker/               # Container configs
+├── docs/                 # Architecture, API, Contributing
 └── data/                 # Output videos
     └── jobs/             # Job folders
+```
+
+## 🏗️ Architecture
+
+This project uses a **modular architecture** with clear separation:
+
+1. **clipper-core** - Pure Python library, usable independently
+2. **clipper-cli** - Thin CLI wrapper around core
+3. **clipper-ui** - Optional web UI using same core APIs
+
+See [docs/architecture.md](docs/architecture.md) for details.
+
+## 🔧 CLI Usage
+
+```bash
+# Install
+pip install -e "./packages/clipper-core[full]"
+pip install -e "./packages/clipper-cli[full]"
+
+# Full pipeline
+clipper pipeline "https://youtube.com/watch?v=xxx" -o ./output
+
+# Step by step
+clipper download "url" -o video.mp4
+clipper transcribe video.mp4 -o subs.srt
+clipper analyze subs.srt -o chapters.json --ai groq
+clipper render video.mp4 chapters.json -o ./clips
+
+# Config
+clipper config --list
+clipper config ai.provider groq
 ```
 
 ## 🛠️ Troubleshooting

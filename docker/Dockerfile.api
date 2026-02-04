@@ -1,0 +1,33 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    yt-dlp \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY packages/clipper-core/pyproject.toml /tmp/clipper-core/
+COPY packages/clipper-cli/pyproject.toml /tmp/clipper-cli/
+COPY packages/clipper-ui/backend/pyproject.toml /tmp/clipper-ui/
+
+RUN pip install --no-cache-dir -e /tmp/clipper-core \
+    && pip install --no-cache-dir -e /tmp/clipper-cli \
+    && pip install --no-cache-dir -e /tmp/clipper-ui \
+    && rm -rf /tmp/*
+
+# Create data directory
+RUN mkdir -p /data/jobs
+
+WORKDIR /app
+
+# Copy source
+COPY packages/clipper-core/clipper_core /app/clipper_core
+COPY packages/clipper-ui/backend/clipper_ui /app/clipper_ui
+
+# Install Whisper models on first run (lazy)
+ENV WHISPER_DIR=/data/whisper
+
+EXPOSE 8000
+
+CMD ["uvicorn", "clipper_ui.main:app", "--host", "0.0.0.0", "--port", "8000"]

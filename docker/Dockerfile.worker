@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    yt-dlp \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY packages/clipper-core/pyproject.toml /tmp/clipper-core/
+
+RUN pip install --no-cache-dir -e /tmp/clipper-core \
+    && pip install --no-cache-dir celery[redis] \
+    && rm -rf /tmp/*
+
+# Create data directory
+RUN mkdir -p /data/jobs
+
+WORKDIR /app
+
+COPY packages/clipper-core/clipper_core /app/clipper_core
+
+# Start Celery worker
+CMD ["celery", "-A", "clipper_ui.tasks.worker", "worker", "--loglevel=info"]
