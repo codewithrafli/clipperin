@@ -15,6 +15,7 @@ data/
 *.srt
 *.wav
 *.mp3
+output/
 
 # IDE
 .idea/

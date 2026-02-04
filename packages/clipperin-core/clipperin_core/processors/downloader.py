@@ -59,11 +59,16 @@ class VideoDownloader:
             for line in result.stderr.split("\n"):
                 if "[download] Destination:" in line:
                     extracted_path = line.split(": ", 1)[1].strip()
+                    import sys
+                    print(f"[DOWNLOADER] Requested: {output_path}", file=sys.stderr)
+                    print(f"[DOWNLOADER] Extracted: {extracted_path}", file=sys.stderr)
                     return Path(extracted_path)
 
             # Fallback: try to find by video ID
             info = self.get_info(url)
             if info:
+                import sys
+                print(f"[DOWNLOADER] Fallback to video ID: {info.id}", file=sys.stderr)
                 return self.output_dir / f"{info.id}.mp4"
 
         except subprocess.CalledProcessError as e:

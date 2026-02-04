@@ -82,6 +82,7 @@ class AudioTranscriber:
         self._load_model()
 
         # Use whisper CLI for more reliable output
+        # Whisper outputs: filename.json (same basename, different extension)
         output_path = audio_path.with_suffix(".json")
 
         cmd = [
@@ -103,6 +104,26 @@ class AudioTranscriber:
                 check=True,
             )
 
+            # Debug: list files in output directory
+            import os
+            json_files = [f for f in os.listdir(audio_path.parent) if f.endswith('.json') and 'chapters' not in f]
+            if not output_path.exists():
+                # Try to find any JSON file with matching stem
+                for jf in json_files:
+                    jp = audio_path.parent / jf
+                    if jp.stem == audio_path.stem:
+                        output_path = jp
+                        break
+
+            # Debug output
+            import sys
+            print(f"[DEBUG] audio_path: {audio_path}", file=sys.stderr)
+            print(f"[DEBUG] output_path: {output_path}", file=sys.stderr)
+            print(f"[DEBUG] output_path.exists(): {output_path.exists()}", file=sys.stderr)
+            print(f"[DEBUG] json_files: {json_files}", file=sys.stderr)
+            print(f"[DEBUG] stdout length: {len(result.stdout)}", file=sys.stderr)
+            print(f"[DEBUG] stderr preview: {result.stderr[:200]}", file=sys.stderr)
+
             # Read the JSON output
             if output_path.exists():
                 with open(output_path) as f:
@@ -110,10 +131,25 @@ class AudioTranscriber:
                 return TranscriptionResult.from_whisper_result(whisper_result)
 
             # Fallback: parse from stdout
-            return self._parse_cli_output(result.stdout)
+            if result.stdout:
+                print("[DEBUG] Using stdout fallback", file=sys.stderr)
+                return self._parse_cli_output(result.stdout)
+
+            # If JSON doesn't exist and no stdout, raise error
+            raise RuntimeError(
+                f"Transcription failed: No output generated. "
+                f"Expected JSON at: {output_path} "
+                f"Found JSON files: {json_files} "
+                f"stderr: {result.stderr[:500] if result.stderr else 'empty'}"
+            )
 
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Transcription failed: {e.stderr}") from e
+            raise RuntimeError(
+                f"Transcription failed with code {e.returncode}. "
+                f"stderr: {e.stderr[:500] if e.stderr else 'empty'}"
+            ) from e
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Failed to parse transcription JSON: {e}") from e
 
     def transcribe_with_timestamps(
         self,
