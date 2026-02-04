@@ -6,7 +6,7 @@ No CLI, no UI - just the core logic.
 """
 
 from clipperin_core.models.job import Job, JobStatus, Chapter, Clip
-from clipperin_core.models.config import Config, WhisperConfig, AIProvider, OutputConfig, CaptionStyle
+from clipperin_core.models.config import Config, WhisperConfig, WhisperModel, AIProvider, OutputConfig, CaptionStyle
 from clipperin_core.pipeline.base import Pipeline, PipelineResult
 from clipperin_core.pipeline.stages.download import DownloadStage
 from clipperin_core.pipeline.stages.transcribe import TranscribeStage
@@ -32,6 +32,7 @@ __all__ = [
     "Clip",
     "Config",
     "WhisperConfig",
+    "WhisperModel",
     "AIProvider",
     "OutputConfig",
     "CaptionStyle",

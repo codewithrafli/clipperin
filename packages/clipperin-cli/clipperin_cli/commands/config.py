@@ -5,7 +5,7 @@ from pathlib import Path
 
 import typer
 
-from clipperin_core import Config, WhisperModel, AIProviderType, OutputConfig
+from clipperin_core import Config, WhisperModel, AIProvider, OutputConfig
 from clipperin_cli.config.settings import get_config_path, load_user_config, save_user_config
 
 
@@ -88,7 +88,7 @@ def config_command(
             if final_key == "model" and isinstance(obj, type(Config().whisper)):
                 setattr(obj, final_key, WhisperModel(value))
             elif final_key == "provider" and isinstance(obj, type(Config().ai)):
-                setattr(obj, final_key, AIProviderType(value))
+                setattr(obj, final_key, AIProvider(value))
             elif final_key == "aspect_ratio" and isinstance(obj, type(Config().output)):
                 setattr(obj, final_key, value)  # String for aspect ratio
             else:

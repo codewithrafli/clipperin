@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from clipperin_core import Config, WhisperModel, AIProviderType
+from clipperin_core import Config, WhisperModel, AIProvider
 
 
 def get_config_path() -> Path:
@@ -47,7 +47,7 @@ def load_user_config() -> Config:
     if "ai" in data:
         a = data["ai"]
         if "provider" in a:
-            config.ai.provider = AIProviderType(a["provider"])
+            config.ai.provider = AIProvider(a["provider"])
         if "gemini_api_key" in a:
             config.ai.gemini_api_key = a.get("gemini_api_key")
         if "groq_api_key" in a:

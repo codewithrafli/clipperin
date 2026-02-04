@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from typing import Optional, Callable
 
+from rich.console import Console
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -10,8 +11,9 @@ from rich.progress import (
     BarColumn,
     TaskProgressColumn,
     TimeRemainingColumn,
-    console,
 )
+
+console = Console()
 
 
 @contextmanager
