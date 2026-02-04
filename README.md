@@ -233,8 +233,8 @@ docker-compose exec worker pip install -U yt-dlp
 
 ## 📄 License
 
-One-time purchase. Use forever. No subscriptions.
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-**Built with ❤️ for content creators who want to keep their money.**
+**Built with ❤️ for content creators.**
