@@ -4,4 +4,4 @@
 INPUT="${1:?Usage: $0 <transcription.srt> [output.json]}"
 OUTPUT="${2:-chapters.json}"
 
-clipper analyze "$INPUT" -o "$OUTPUT" "${@:3}"
+clipperin analyze "$INPUT" -o "$OUTPUT" "${@:3}"

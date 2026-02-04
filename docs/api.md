@@ -5,7 +5,7 @@
 ### Models
 
 ```python
-from clipper_core import Job, Chapter, Clip, Config
+from clipperin_core import Job, Chapter, Clip, Config
 
 # Create a job
 job = Job(url="https://youtube.com/watch?v=xxx")
@@ -19,8 +19,8 @@ config.ai.provider = AIProviderType.GROQ
 ### Pipeline
 
 ```python
-from clipper_core import Pipeline, FullPipeline
-from clipper_core import VideoDownloader, AudioTranscriber, ContentAnalyzer, VideoRenderer
+from clipperin_core import Pipeline, FullPipeline
+from clipperin_core import VideoDownloader, AudioTranscriber, ContentAnalyzer, VideoRenderer
 
 # Create processors
 downloader = VideoDownloader()
@@ -36,7 +36,7 @@ result = pipeline.execute(job)
 ### Individual Stages
 
 ```python
-from clipper_core.pipeline.stages import DownloadStage, TranscribeStage
+from clipperin_core.pipeline.stages import DownloadStage, TranscribeStage
 
 stage = DownloadStage(downloader)
 stage.validate(job)  # Check if ready
@@ -49,19 +49,19 @@ stage.execute(job)   # Run the stage
 
 ```bash
 # Download video
-clipper download "https://youtube.com/watch?v=xxx" -o video.mp4
+clipperin download "https://youtube.com/watch?v=xxx" -o video.mp4
 
 # Transcribe
-clipper transcribe video.mp4 -o subtitles.srt
+clipperin transcribe video.mp4 -o subtitles.srt
 
 # Analyze
-clipper analyze subtitles.srt -o chapters.json --ai groq
+clipperin analyze subtitles.srt -o chapters.json --ai groq
 
 # Render
-clipper render video.mp4 chapters.json -o ./clips
+clipperin render video.mp4 chapters.json -o ./clips
 
 # Full pipeline
-clipper pipeline "https://youtube.com/watch?v=xxx" -o ./output
+clipperin pipeline "https://youtube.com/watch?v=xxx" -o ./output
 ```
 
 ## REST API

@@ -12,9 +12,9 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Install in development mode
-pip install -e "./packages/clipper-core[full]"
-pip install -e "./packages/clipper-cli[full]"
-pip install -e "./packages/clipper-ui[full]"
+pip install -e "./packages/clipperin-core[full]"
+pip install -e "./packages/clipperin-cli[full]"
+pip install -e "./packages/clipperin-ui[full]"
 
 # Install development tools
 pip install ruff mypy pytest
@@ -27,12 +27,12 @@ pip install ruff mypy pytest
 pytest
 
 # Run with coverage
-pytest --cov=clipper_core --cov=clipper_cli --cov=clipper_ui
+pytest --cov=clipperin_core --cov=clipperin_cli --cov=clipperin_ui
 
 # Type checking
-mypy packages/clipper-core/clipper_core
-mypy packages/clipper-cli/clipper_cli
-mypy packages/clipper-ui/backend/clipper_ui
+mypy packages/clipperin-core/clipperin_core
+mypy packages/clipperin-cli/clipperin_cli
+mypy packages/clipperin-ui/backend/clipperin_ui
 ```
 
 ## Code Style
@@ -47,29 +47,29 @@ ruff check .
 
 ## Adding a New Feature
 
-1. **Core feature** - Add to `clipper-core`
-   - New processor goes in `clipper_core/processors/`
-   - New model goes in `clipper_core/models/`
+1. **Core feature** - Add to `clipperin-core`
+   - New processor goes in `clipperin_core/processors/`
+   - New model goes in `clipperin_core/models/`
 
-2. **CLI command** - Add to `clipper-cli`
-   - New command goes in `clipper_cli/commands/`
-   - Register in `clipper_cli/main.py`
+2. **CLI command** - Add to `clipperin-cli`
+   - New command goes in `clipperin_cli/commands/`
+   - Register in `clipperin_cli/main.py`
 
-3. **UI endpoint** - Add to `clipper-ui`
-   - New route goes in `clipper_ui/api/`
-   - New schema goes in `clipper_ui/schemas/`
+3. **UI endpoint** - Add to `clipperin-ui`
+   - New route goes in `clipperin_ui/api/`
+   - New schema goes in `clipperin_ui/schemas/`
 
 ## Adding an AI Provider
 
-1. Create `clipper_core/ai/newprovider.py`
+1. Create `clipperin_core/ai/newprovider.py`
 2. Inherit from `AIClient`
 3. Implement required methods: `is_configured()`, `generate()`, `chat()`
-4. Register in `clipper_core/ai/__init__.py`
-5. Add to config in `clipper_core/models/config.py`
+4. Register in `clipperin_core/ai/__init__.py`
+5. Add to config in `clipperin_core/models/config.py`
 
 ## Adding a Caption Style
 
-Add to `CaptionStyle.get_default_styles()` in `clipper_core/models/config.py`:
+Add to `CaptionStyle.get_default_styles()` in `clipperin_core/models/config.py`:
 
 ```python
 cls(

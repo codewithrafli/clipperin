@@ -7,9 +7,9 @@ requires-python = ">=3.11"
 
 [project.optional-dependencies]
 dev = [
-    "clipper-core[full]",
-    "clipper-cli[full]",
-    "clipper-ui[full]",
+    "clipperin-core[full]",
+    "clipperin-cli[full]",
+    "clipperin-ui[full]",
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.3.0",

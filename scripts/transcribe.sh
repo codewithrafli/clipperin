@@ -4,4 +4,4 @@
 VIDEO="${1:?Usage: $0 <video> [output]}"
 OUTPUT="${2:-subtitles.srt}"
 
-clipper transcribe "$VIDEO" -o "$OUTPUT"
+clipperin transcribe "$VIDEO" -o "$OUTPUT"
