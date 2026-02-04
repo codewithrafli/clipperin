@@ -1,9 +1,26 @@
 [project]
 name = "clipperin-cli"
 version = "0.1.0"
-description = "Auto Clipper CLI - Command line interface"
+description = "Auto Clipper CLI - Command line interface for video clipping"
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Rafli", email = "codewithrafli@gmail.com" }
+]
+keywords = ["video", "clipping", "cli", "whisper", "transcription"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Utilities",
+]
 dependencies = [
     "clipperin-core",
     "typer>=0.12.0",
@@ -18,9 +35,19 @@ full = [
     "clipperin-core[full]",
 ]
 
+[project.urls]
+Homepage = "https://github.com/codewithrafli/clipperin"
+Documentation = "https://github.com/codewithrafli/clipperin#readme"
+Repository = "https://github.com/codewithrafli/clipperin"
+Issues = "https://github.com/codewithrafli/clipperin/issues"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["clipperin_cli"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
