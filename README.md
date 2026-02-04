@@ -2,15 +2,30 @@
 
 **Self-hosted video clipping solution. No recurring API fees - 100% offline processing!**
 
-Transform long YouTube videos into viral short clips automatically.
+Transform long YouTube videos into viral short clips (9:16 vertical) automatically. Alternative to OpusClip & CapCut without monthly subscriptions.
 
 ## ✨ Features
 
+### Core Features
 - 🎥 **Video Download** - Supports YouTube and other platforms via yt-dlp
 - 🎧 **AI Transcription** - Local Whisper model (no OpenAI API needed)
-- ✂️ **Auto Clipping** - Creates 9:16 vertical shorts with subtitles
-- 🎨 **Styled Subtitles** - Professional-looking burned-in captions
-- 📊 **Web Dashboard** - Simple UI to manage your clips
+- 📝 **7 Caption Styles** - Professional-looking burned-in subtitles
+- 📊 **Web Dashboard** - Beautiful UI to manage your clips
+
+### AI Features (Optional)
+- 🪝 **Auto Hook** - Generate viral intro text overlay (AI-powered)
+- 🎯 **Smart Reframe** - Track speaker face, keep centered (FREE - uses OpenCV)
+- 📐 **Dynamic Layout** - Auto switch single/split view (FREE)
+- 🧠 **AI Chapter Analysis** - Smart detection of highlights in videos
+
+### Output Options
+- 📱 **Multiple Aspect Ratios** - 9:16 (TikTok/Reels), 1:1 (Square), 4:5 (IG/FB)
+- 📊 **Progress Bar** - Customizable color and style
+- 🌐 **Translation** - Optional subtitle translation
+
+### Two-Phase Processing
+1. **Phase 1**: Download → Transcribe → AI Analysis → Generate Chapters
+2. **Phase 2**: Select chapters → Export clips with subtitles
 
 ## 🚀 Quick Start
 
@@ -41,25 +56,74 @@ That's it! 🎉
 1. Open **http://localhost:3000** in your browser
 2. Paste a YouTube URL
 3. Click "Create Clip"
-4. Wait for processing (download → transcribe → clip)
-5. Download your vertical short video!
+4. Wait for processing:
+   - Video downloads
+   - Transcribes with Whisper
+   - AI analyzes chapters
+5. **Select chapters** you want to clip
+6. Download your vertical short videos!
 
 ## ⚙️ Configuration
 
 Edit `.env` to customize:
 
 ```bash
-# Whisper model: tiny, base, small, medium, large
+# Whisper Model: tiny, base, small, medium, large
 # Larger = more accurate but slower
 WHISPER_MODEL=base
 
-# Clip settings
-CLIP_START=30       # Start time in seconds
-CLIP_DURATION=30    # Clip length in seconds
+# Whisper Language (optional - leave empty for auto-detect)
+# Common: en (English), id (Indonesian), ms (Malay)
+WHISPER_LANGUAGE=
 
-# Output quality
-OUTPUT_CRF=23       # Lower = better quality, larger file
+# ===========================================
+# AI PROVIDER SETTINGS
+# ===========================================
+# Choose: "gemini", "groq", "openai", or "none"
+# "none" = free rule-based detection (no AI needed)
+AI_PROVIDER=groq
+
+# API Keys (only need ONE based on your provider)
+GROQ_API_KEY=          # Get at: https://console.groq.com
+GEMINI_API_KEY=        # Get at: https://aistudio.google.com
+OPENAI_API_KEY=        # Get at: https://platform.openai.com
+
+# ===========================================
+# AI FEATURES
+# ===========================================
+# Auto Hook - Generate viral intro text
+ENABLE_AUTO_HOOK=false
+HOOK_DURATION=5
+
+# Smart Reframe - Track speaker face (FREE)
+ENABLE_SMART_REFRAME=false
+
+# ===========================================
+# OUTPUT SETTINGS
+# ===========================================
+# Aspect Ratio: "9:16", "1:1", "4:5"
+OUTPUT_ASPECT_RATIO=9:16
+
+# Progress Bar
+ENABLE_PROGRESS_BAR=true
+PROGRESS_BAR_COLOR=#FF0050
+
+# Video Quality
+OUTPUT_WIDTH=1080
+OUTPUT_HEIGHT=1920
+OUTPUT_CRF=23
 ```
+
+## 💰 AI Provider Costs
+
+| Provider | Cost/Video | Free Tier |
+|----------|------------|-----------|
+| **Gemini** | FREE | Unlimited |
+| **Groq** | ~Rp 40 | $10 credit |
+| **OpenAI** | ~Rp 650 | Pay-as-you-go |
+| **None** | FREE | Rule-based |
+
+> Note: Smart Reframe & Transcription are **always FREE** (uses OpenCV + Whisper)
 
 ## 🔌 API Endpoints
 
@@ -68,15 +132,27 @@ OUTPUT_CRF=23       # Lower = better quality, larger file
 | `POST` | `/api/jobs` | Submit new clipping job |
 | `GET` | `/api/jobs` | List all jobs |
 | `GET` | `/api/jobs/{id}` | Get job status |
+| `GET` | `/api/jobs/{id}/chapters` | Get generated chapters |
+| `POST` | `/api/jobs/{id}/select-chapters` | Select chapters to clip |
 | `GET` | `/api/jobs/{id}/download` | Download output video |
 | `DELETE` | `/api/jobs/{id}` | Delete job and files |
+| `GET` | `/api/caption-styles` | Get available caption styles |
+| `GET` | `/api/ai-providers` | Get available AI providers |
+| `GET` | `/api/ai-features` | Get AI feature status |
+| `POST` | `/api/settings` | Update settings |
 
 ### Example: Submit via cURL
 
 ```bash
 curl -X POST http://localhost:8000/api/jobs \
   -H "Content-Type: application/json" \
-  -d '{"url": "https://youtube.com/watch?v=VIDEO_ID"}'
+  -d '{
+    "url": "https://youtube.com/watch?v=VIDEO_ID",
+    "caption_style": "default",
+    "use_ai_detection": true,
+    "enable_auto_hook": true,
+    "enable_smart_reframe": true
+  }'
 ```
 
 ## 📁 Project Structure
@@ -91,6 +167,7 @@ clipper-engine/
 │   └── config.py         # Settings
 ├── web/                  # React dashboard
 │   └── src/App.jsx       # Main UI
+├── landing/              # Marketing page
 └── data/                 # Output videos
     └── jobs/             # Job folders
 ```
