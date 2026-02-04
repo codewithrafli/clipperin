@@ -203,7 +203,7 @@ pip install -e "./packages/clipperin-core[full]"
 pip install -e "./packages/clipperin-cli[full]"
 
 # Full pipeline
-clipperin pipeline "https://youtube.com/watch?v=xxx" -o ./output
+clipperin pipeline "https://www.youtube.com/watch?v=aSxLg7fRuFs" -o ./output
 
 # Step by step
 clipperin download "url" -o video.mp4
