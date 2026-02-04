@@ -49,7 +49,7 @@ cd clipper-engine
 cp .env.example .env
 
 # 3. Start all services
-docker-compose up --build
+docker-compose -f docker/docker-compose.yml up --build
 
 # 4. Open http://localhost:3000
 ```
@@ -220,8 +220,8 @@ clipperin config ai.provider groq
 
 ### Container won't start?
 ```bash
-docker-compose logs api
-docker-compose logs worker
+docker-compose -f docker/docker-compose.yml logs api
+docker-compose -f docker/docker-compose.yml logs worker
 ```
 
 ### Out of memory?
@@ -233,7 +233,7 @@ WHISPER_MODEL=tiny
 ### Video download fails?
 Update yt-dlp:
 ```bash
-docker-compose exec worker pip install -U yt-dlp
+docker-compose -f docker/docker-compose.yml exec worker pip install -U yt-dlp
 ```
 
 ## 🙏 Support
